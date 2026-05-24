@@ -29,6 +29,9 @@ A powerful VS Code extension for managing your favorite files and bookmarks with
 - **Sorting**: Sort all bookmarks globally by line number or added order using the **Line / Order** buttons next to the "Bookmarks" section title
   - **Line**: Sorts all bookmarks by line number (new bookmarks are inserted in line order)
   - **Order**: Sorts all bookmarks by the order they were added (new bookmarks are appended at the bottom)
+- **Import / Export**: Back up and restore bookmarks via the `...` menu next to the "CORE ANCHOR" title
+  - Export saves bookmarks and metadata to a single JSON file
+  - Import supports **Replace** (full overwrite) or **Merge** (existing takes priority; conflicting lines shown in a picker)
 
 ### 🎨 4 Beautiful Themes
 - **Classic**: Original, simple design (Recommended)
@@ -248,6 +251,14 @@ If you encounter any problems or have suggestions, please file an issue on GitHu
 
 ## CHANGELOG
 
+### 0.0.7
+- **Feature**: Import / Export bookmarks — back up and restore via the `...` menu in the sidebar title bar
+  - Export combines `bookmarks.json` and `bookmarks-meta.json` into a single file
+  - Import supports **Replace** and **Merge** modes; Merge shows a conflict picker for duplicate lines
+- **Fix**: Bookmark auto-adjustment now correctly handles line joins (Backspace/Delete), partial-selection deletes, and Ctrl+Z with auto-indent — bookmarks are rescued to the surviving line instead of being silently deleted
+- **Fix**: Split-pane gutter icon duplication resolved — all visible editors for the same document are now updated together
+- **Fix**: `isLineJoin` false-positive for multi-line selections starting mid-line and ending at line start
+
 ### 0.0.4
 - **Fix**: Resolved UI flickering when hovering between virtual folders — folder row height is now stable regardless of hover state
 - **Fix**: `showInfo()` was calling itself recursively instead of `vscode.window.showInformationMessage()`, causing a stack overflow whenever a notification was triggered
@@ -290,6 +301,9 @@ VS Codeでお気に入りファイルとブックマークを管理するため�
 - **ソート**: 「Bookmarks」セクションタイトル横の **Line / Order** ボタンで全ブックマークを一括ソート
   - **Line**: 全ブックマークを行番号順にソート（新規追加時も行番号順の位置に挿入）
   - **Order**: 全ブックマークを追加順にソート（新規追加時は末尾に追加）
+- **インポート / エクスポート**: サイドバータイトル横の `...` メニューからブックマークのバックアップと復元が可能
+  - エクスポートはブックマークとメタ情報を1つのJSONファイルにまとめて保存
+  - インポートは **Replace**（全置換）と **Merge**（競合行をピッカーで選択して解決）に対応
 
 ### 🎨 4つの美しいテーマ
 - **Classic**: オリジナルのシンプルなデザイン（推奨）

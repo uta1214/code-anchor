@@ -2,7 +2,7 @@
   "name": "core-anchor",
   "displayName": "Core Anchor",
   "description": "Manage favorite files and bookmarks with a beautiful, customizable interface",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "uta-orange-1214",
   "author": {
     "name": "uta"
@@ -62,6 +62,16 @@
       {
         "command": "core-anchor.goToNextBookmark",
         "title": "Core Anchor: Go to Next Bookmark"
+      },
+      {
+        "command": "core-anchor.exportBookmarks",
+        "title": "Core Anchor: Export Bookmarks",
+        "icon": "$(export)"
+      },
+      {
+        "command": "core-anchor.importBookmarks",
+        "title": "Core Anchor: Import Bookmarks",
+        "icon": "$(import)"
       }
     ],
     "keybindings": [
@@ -119,6 +129,18 @@
           "command": "core-anchor.addFavorite",
           "group": "core-anchor@2",
           "when": "editorTextFocus"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "core-anchor.exportBookmarks",
+          "when": "view == core-anchor.mainView",
+          "group": "1_data@1"
+        },
+        {
+          "command": "core-anchor.importBookmarks",
+          "when": "view == core-anchor.mainView",
+          "group": "1_data@2"
         }
       ]
     },

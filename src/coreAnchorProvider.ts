@@ -432,11 +432,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     }
     
     const newPath = path.join(configDir, 'core-anchor-favorites.json');
-    const oldPath = path.join(configDir, 'code-anchor-favorites.json');
-    // 旧ファイルが存在し新ファイルがまだない場合のみ移行（データ保持）
-    if (!fs.existsSync(newPath) && fs.existsSync(oldPath)) {
-      fs.renameSync(oldPath, newPath);
-    }
     return newPath;
   }
 
@@ -462,11 +457,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         fs.mkdirSync(configDir, { recursive: true });
       }
       const newMetaPath = path.join(configDir, 'core-anchor-favorites-meta.json');
-      const oldMetaPath = path.join(configDir, 'code-anchor-favorites-meta.json');
-      // 旧ファイルが存在し新ファイルがまだない場合のみ移行（データ保持）
-      if (!fs.existsSync(newMetaPath) && fs.existsSync(oldMetaPath)) {
-        fs.renameSync(oldMetaPath, newMetaPath);
-      }
       return newMetaPath;
     } else {
       const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -480,7 +470,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Bookmarks Metaのパスを取得
-  private getBookmarksMetaPath(): string {
+  public getBookmarksMetaPath(): string {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) return '';
     const vscodeFolder = path.join(workspaceFolders[0].uri.fsPath, '.vscode');
@@ -548,7 +538,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Bookmarks Metaを読み込む
-  private loadBookmarksMeta(): BookmarksMeta {
+  public loadBookmarksMeta(): BookmarksMeta {
     const metaPath = this.getBookmarksMetaPath();
     
     if (!metaPath || !fs.existsSync(metaPath)) {
@@ -597,7 +587,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Bookmarks Metaを保存
-  private saveBookmarksMeta(meta: BookmarksMeta) {
+  public saveBookmarksMeta(meta: BookmarksMeta) {
     const metaPath = this.getBookmarksMetaPath();
     
     if (!metaPath) {

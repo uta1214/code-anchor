@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { CoreAnchorProvider } from './coreAnchorProvider';
-import { BookmarkIconType, BookmarksData } from './types';
+import { BookmarkIconType, BookmarksData, BookmarksMeta } from './types';
 
 const decorationTypes: Map<BookmarkIconType, vscode.TextEditorDecorationType> = new Map();
 
@@ -115,11 +115,226 @@ function loadBookmarks(): BookmarksData {
 // ブックマークを保存する
 function saveBookmarks(bookmarks: BookmarksData) {
   const bookmarksPath = getBookmarksPath();
+  if (!bookmarksPath) return; // ワークスペースがない場合はスキップ
   try {
     fs.writeFileSync(bookmarksPath, JSON.stringify(bookmarks, null, 2));
   } catch (error) {
     console.error('Error saving bookmarks:', error);
   }
+}
+
+// ブックマークをエクスポートする
+async function exportBookmarks(provider: CoreAnchorProvider): Promise<void> {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders) {
+    vscode.window.showErrorMessage('Core Anchor: No workspace folder is open');
+    return;
+  }
+
+  const bookmarks = loadBookmarks();
+  const bookmarksMeta = provider.loadBookmarksMeta();
+
+  const exportData = {
+    version: '1.0',
+    exportedAt: new Date().toISOString(),
+    bookmarks,
+    bookmarksMeta,
+  };
+
+  const defaultUri = vscode.Uri.file(
+    path.join(workspaceFolders[0].uri.fsPath, 'core-anchor-bookmarks.json')
+  );
+
+  const uri = await vscode.window.showSaveDialog({
+    defaultUri,
+    filters: { 'JSON': ['json'] },
+    title: 'Export Core Anchor Bookmarks',
+  });
+
+  if (!uri) return;
+
+  try {
+    fs.writeFileSync(uri.fsPath, JSON.stringify(exportData, null, 2));
+    showInfo(`Core Anchor: Bookmarks exported to ${path.basename(uri.fsPath)}`);
+  } catch (error) {
+    vscode.window.showErrorMessage(`Core Anchor: Export failed — ${error}`);
+  }
+}
+
+// ブックマークをインポートする
+async function importBookmarks(provider: CoreAnchorProvider): Promise<void> {
+  const uris = await vscode.window.showOpenDialog({
+    filters: { 'JSON': ['json'] },
+    canSelectMany: false,
+    title: 'Import Core Anchor Bookmarks',
+  });
+
+  if (!uris || uris.length === 0) return;
+
+  let importData: any;
+  try {
+    const content = fs.readFileSync(uris[0].fsPath, 'utf-8');
+    importData = JSON.parse(content);
+  } catch {
+    vscode.window.showErrorMessage(
+      'Core Anchor: Failed to read the file. Please check it is a valid JSON file.'
+    );
+    return;
+  }
+
+  // バリデーション: version / bookmarks / bookmarksMeta が揃っているか確認
+  if (
+    typeof importData.version !== 'string' ||
+    typeof importData.bookmarks !== 'object' || importData.bookmarks === null ||
+    typeof importData.bookmarksMeta !== 'object' || importData.bookmarksMeta === null
+  ) {
+    vscode.window.showErrorMessage(
+      'Core Anchor: Invalid file format. This file does not appear to be a Core Anchor export.'
+    );
+    return;
+  }
+
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(merge) Merge',
+        description: 'Add bookmarks from import that do not exist locally (existing takes priority)',
+        value: 'merge',
+      },
+      {
+        label: '$(replace-all) Replace',
+        description: 'Replace all existing bookmarks with imported data',
+        value: 'replace',
+      },
+    ],
+    {
+      title: 'Import Core Anchor Bookmarks',
+      placeHolder: 'How would you like to import?',
+    }
+  );
+
+  if (!choice) return;
+
+  if (choice.value === 'replace') {
+    // 既存データを丸ごと置き換え
+    saveBookmarks(importData.bookmarks as BookmarksData);
+    provider.saveBookmarksMeta(importData.bookmarksMeta as BookmarksMeta);
+  } else {
+    // ── Merge ────────────────────────────────────────────────────────────
+    // 1. コンフリクト（同ファイル＋同行番号）を検出
+    // 2. コンフリクトがあれば QuickPick (canPickMany) でユーザーに選択させる
+    //    - チェックあり → インポート側で上書き
+    //    - チェックなし → 既存を保持（デフォルト）
+    // 3. コンフリクトなしのBMは自動でマージ
+    const existing = loadBookmarks();
+    const existingMeta = provider.loadBookmarksMeta();
+
+    // ── コンフリクト検出 ──────────────────────────────────────────────
+    interface ConflictItem extends vscode.QuickPickItem {
+      filePath: string;
+      line: number;
+    }
+    const conflictItems: ConflictItem[] = [];
+
+    for (const [filePath, importedBMs] of Object.entries(importData.bookmarks as BookmarksData)) {
+      if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
+      if (!existing[filePath]) continue;
+      const existingLineMap = new Map(existing[filePath].map(bm => [bm.line, bm]));
+      for (const importedBM of importedBMs) {
+        const existingBM = existingLineMap.get(importedBM.line);
+        if (!existingBM) continue;
+
+        // 同じラベル・アイコンなら実質コンフリクトなし（スキップ）
+        if (existingBM.label === importedBM.label &&
+            existingBM.iconType === importedBM.iconType) continue;
+
+        const fileName = filePath.split('/').pop() ?? filePath;
+        const existingLabel  = existingBM.label  || '(no label)';
+        const importedLabel  = importedBM.label  || '(no label)';
+        const existingIcon   = existingBM.iconType  ? `[${existingBM.iconType}]`  : '';
+        const importedIcon   = importedBM.iconType  ? `[${importedBM.iconType}]`  : '';
+
+        conflictItems.push({
+          label:       `$(warning) ${fileName}  line ${importedBM.line + 1}`,
+          description: `existing: ${existingIcon}${existingLabel}  →  import: ${importedIcon}${importedLabel}`,
+          detail:      filePath,
+          picked:      false,   // デフォルトはチェックなし（既存を保持）
+          filePath,
+          line: importedBM.line,
+        });
+      }
+    }
+
+    // ── コンフリクトがある場合: QuickPick で選択 ─────────────────────
+    // どの行をインポート側で上書きするかを Set で管理
+    const overwriteKeys = new Set<string>(); // `${filePath}:${line}`
+
+    if (conflictItems.length > 0) {
+      const selected = await vscode.window.showQuickPick(conflictItems, {
+        canPickMany: true,
+        title: `Import Bookmarks — ${conflictItems.length} conflict(s) found`,
+        placeHolder: 'Check items to overwrite with imported version (unchecked = keep existing)',
+      });
+
+      // キャンセルされたら中断
+      if (selected === undefined) return;
+
+      for (const item of selected) {
+        overwriteKeys.add(`${item.filePath}:${item.line}`);
+      }
+    }
+
+    // ── マージ実行 ────────────────────────────────────────────────────
+    const mergedBookmarks: BookmarksData = { ...existing };
+
+    for (const [filePath, importedBMs] of Object.entries(importData.bookmarks as BookmarksData)) {
+      if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
+      if (!mergedBookmarks[filePath]) {
+        // 既存にないファイル: インポートをそのまま追加
+        mergedBookmarks[filePath] = importedBMs;
+      } else {
+        const existingLines = new Set(mergedBookmarks[filePath].map(bm => bm.line));
+        for (const importedBM of importedBMs) {
+          const key = `${filePath}:${importedBM.line}`;
+          if (!existingLines.has(importedBM.line)) {
+            // 行番号が被らない → 追加
+            mergedBookmarks[filePath].push(importedBM);
+          } else if (overwriteKeys.has(key)) {
+            // コンフリクトかつユーザーが上書きを選択 → 既存を置き換え
+            mergedBookmarks[filePath] = mergedBookmarks[filePath].map(bm =>
+              bm.line === importedBM.line ? importedBM : bm
+            );
+          }
+          // それ以外（コンフリクトで既存保持を選択）→ 何もしない
+        }
+      }
+    }
+
+    // fileOrder: 既存順を維持しつつ新規ファイルを末尾に追加
+    const mergedFileOrder = [...existingMeta.fileOrder];
+    ((importData.bookmarksMeta as BookmarksMeta).fileOrder || []).forEach((f: string) => {
+      if (!mergedFileOrder.includes(f)) mergedFileOrder.push(f);
+    });
+
+    // bookmarkSortType: 既存優先（新規ファイル分のみ追加）
+    const mergedSortType = {
+      ...(importData.bookmarksMeta as BookmarksMeta).bookmarkSortType,
+      ...existingMeta.bookmarkSortType,
+    };
+
+    const mergedMeta: BookmarksMeta = {
+      fileOrder: mergedFileOrder,
+      bookmarkSortType: mergedSortType,
+      globalSortType: existingMeta.globalSortType ??
+        (importData.bookmarksMeta as BookmarksMeta).globalSortType,
+    };
+
+    saveBookmarks(mergedBookmarks);
+    provider.saveBookmarksMeta(mergedMeta);
+  }
+
+  provider.refresh();
+  showInfo('Core Anchor: Bookmarks imported successfully');
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -190,8 +405,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('core-anchor.goToPreviousBookmark', () => {
-      console.log('[Core Anchor] Go to previous bookmark command');
-      
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       
@@ -220,17 +433,11 @@ export function activate(context: vscode.ExtensionContext) {
         targetBookmark = previousBookmarks[0];
       } else if (wrap) {
         // 前のブックマークがない場合は最後のブックマークにループ
-        targetBookmark = fileBookmarks.sort((a, b) => b.line - a.line)[0];
+        targetBookmark = [...fileBookmarks].sort((a, b) => b.line - a.line)[0];
       } else {
         showInfo('Already at the first bookmark');
         return;
       }
-      
-      console.log('[Core Anchor] Jump to previous bookmark:', { 
-        currentLine, 
-        targetLine: targetBookmark.line, 
-        label: targetBookmark.label 
-      });
       
       // ブックマークにジャンプ
       const position = new vscode.Position(targetBookmark.line, 0);
@@ -246,8 +453,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('core-anchor.goToNextBookmark', () => {
-      console.log('[Core Anchor] Go to next bookmark command');
-      
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       
@@ -276,17 +481,11 @@ export function activate(context: vscode.ExtensionContext) {
         targetBookmark = nextBookmarks[0];
       } else if (wrap) {
         // 次のブックマークがない場合は最初のブックマークにループ
-        targetBookmark = fileBookmarks.sort((a, b) => a.line - b.line)[0];
+        targetBookmark = [...fileBookmarks].sort((a, b) => a.line - b.line)[0];
       } else {
         showInfo('Already at the last bookmark');
         return;
       }
-      
-      console.log('[Core Anchor] Jump to next bookmark:', { 
-        currentLine, 
-        targetLine: targetBookmark.line, 
-        label: targetBookmark.label 
-      });
       
       // ブックマークにジャンプ
       const position = new vscode.Position(targetBookmark.line, 0);
@@ -301,9 +500,25 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('core-anchor.exportBookmarks', async () => {
+      await exportBookmarks(provider);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('core-anchor.importBookmarks', async () => {
+      await importBookmarks(provider);
+    })
+  );
+
+  context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (editor) {
-        provider.updateDecorations(editor);
+        // アクティブなエディタだけでなく、同じドキュメントを開いている
+        // 全エディタ（分割ペインを含む）を更新する
+        vscode.window.visibleTextEditors
+          .filter(e => e.document === editor.document)
+          .forEach(e => provider.updateDecorations(e));
       }
     })
   );
@@ -311,9 +526,8 @@ export function activate(context: vscode.ExtensionContext) {
   // ドキュメント変更時にブックマークの行番号を調整
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || event.document !== editor.document) return;
-      
+      // activeTextEditor に依存せず event.document を直接使う。
+      // これにより分割ペインでアクティブでない側でも正しく処理できる。
       const relativePath = vscode.workspace.asRelativePath(event.document.uri);
       const bookmarks = loadBookmarks();
       
@@ -329,81 +543,133 @@ export function activate(context: vscode.ExtensionContext) {
       //   無関係に更新できる。逆順にすることで「複数 change の合算」が
       //   不要になり、Find & Replace / マルチカーソル / Git revert hunk など
       //   複数 change が同時に届くケースを正確に処理できる。
-      //
-      // 【旧実装の問題点】
-      //   totalLineDiff を全 change で合算していたため、
-      //   複数 change の間にあるブックマークが誤ったシフト量で動いていた。
-      //   また "net lineDiff >= 0" のとき削除フィルターをスキップしていたため、
-      //   「3行選択して5行ペースト」のような操作で選択範囲内のブックマークが
-      //   消えずに残るバグがあった。
       // -----------------------------------------------------------------------
       const sortedChanges = [...event.contentChanges].sort(
         (a, b) => b.range.start.line - a.range.start.line
       );
 
       for (const change of sortedChanges) {
-        const startLine  = change.range.start.line;
-        const endLine    = change.range.end.line;
-        const startChar  = change.range.start.character;
-        const endChar    = change.range.end.character;
-        const newText    = change.text;
-
-        // 挿入テキストに含まれる改行数
+        const startLine       = change.range.start.line;
+        const endLine         = change.range.end.line;
+        const startChar       = change.range.start.character;
+        const endChar         = change.range.end.character;
+        const newText         = change.text;
         const newLineCount    = newText.split('\n').length - 1;
-        // 選択範囲がまたぐ行数（同一行なら 0）
         const deletedLineCount = endLine - startLine;
-        // 正: 行が増える / 負: 行が減る / 0: 変化なし
-        const lineDiff = newLineCount - deletedLineCount;
+        const lineDiff        = newLineCount - deletedLineCount;
 
-        // ── ① 複数行削除がある場合: 削除範囲内のブックマークを除去 ──────────
-        // lineDiff の正負に関わらず、複数行にまたがる変更があれば
-        // その範囲内のブックマークは対象コードが消えているので削除する。
+        // ── ① 複数行削除がある場合: 削除範囲内のブックマークを処理 ──────────
         if (deletedLineCount > 0) {
           // endChar === 0 のとき endLine は「次の行の先頭」を指しているだけで
           // endLine 自体の内容は残る。実際に消える最終行は endLine - 1。
-          // 例) Ctrl+Shift+K で5行目を削除 → start:(5,0) end:(6,0)
-          //     → 実際に消えるのは5行目だけ。6行目は残る。
           const effectiveEndLine = endChar === 0 ? endLine - 1 : endLine;
 
           // 行結合 (Backspace / Delete) の判定:
-          //   ・Backspace で行 N を行 N-1 に結合 → start:(N-1, len>0) end:(N, 0)
-          //   ・Delete   で行 N を行 N+1 に結合 → start:(N, len>0) end:(N+1, 0)
-          //   どちらも "前の行の途中から削除が始まり (startChar > 0)、
-          //   次の行の先頭で終わる (endChar === 0)" という形。
-          //   この場合は行そのものが消えるのではなく内容が合流するだけなので
-          //   ブックマークを削除しない（後の shift で位置を調整する）。
-          //   Ctrl+Shift+K は startChar === 0 なので行結合ではない。
-          const isLineJoin =
-            endChar === 0 && startChar > 0 && newText === '';
+          //   Backspace: start:(N-1, len>0) end:(N, 0)
+          //   Delete:    start:(N, len>0)   end:(N+1, 0)
+          //   どちらも startChar > 0 かつ endChar === 0 かつ newText === '' の形。
+          const isLineJoin = deletedLineCount === 1 && endChar === 0 && startChar > 0 && newText === '';
 
           if (isLineJoin) {
-            // ── 行結合 (Backspace / Delete) の場合 ──────────────────────────────
-            // 「吸収される側の行 (endLine)」はコードごと消えるため、
-            // そこに置かれたブックマークも削除する。
-            //
-            // 例1) Backspace: 行N-1末尾 → start:(N-1, len>0) end:(N, 0)
-            //      → endLine = N が吸収される → 行N のBMを削除
-            // 例2) Delete:   行N末尾   → start:(N, len>0) end:(N+1, 0)
-            //      → endLine = N+1 が吸収される → 行N+1 のBMを削除
-            //
-            // この削除を行わないと、後続の ② シフトで行N+1 → 行N 等に移動し、
-            // startLine 側に既存のBMがあれば同一行に2つBMが重複するバグが発生する。
-            const before = bookmarks[relativePath].length;
-            bookmarks[relativePath] = bookmarks[relativePath].filter(
-              bm => bm.line !== endLine
-            );
-            if (bookmarks[relativePath].length !== before) {
+            // ── 行結合の場合 ─────────────────────────────────────────────────
+            // endLine の内容は startLine に吸収される。
+            // endLine にBMがある場合、startLine にBMがあればラベルをマージし、
+            // なければ startLine に移動する（黙って消さない）。
+            const bmOnEnd   = bookmarks[relativePath].find(bm => bm.line === endLine);
+            const bmOnStart = bookmarks[relativePath].find(bm => bm.line === startLine);
+
+            if (bmOnEnd) {
+              if (bmOnStart) {
+                // 両行にBMがある → startLine のラベルに endLine のラベルを追記
+                if (bmOnEnd.label) {
+                  bmOnStart.label = bmOnStart.label
+                    ? `${bmOnStart.label} | ${bmOnEnd.label}`
+                    : bmOnEnd.label;
+                }
+                // endLine のBMは削除（startLine に統合済み）
+                bookmarks[relativePath] = bookmarks[relativePath].filter(
+                  bm => bm.line !== endLine
+                );
+              } else {
+                // startLine にBMがない → endLine のBMを startLine に移動
+                bmOnEnd.line = startLine;
+              }
               needsUpdate = true;
             }
           } else {
+            // ── 通常の複数行削除 ─────────────────────────────────────────────
+            //
+            // rescue が必要なケース:
+            //   (A) endChar > 0:
+            //       endLine の末尾 (char endChar 以降) が startLine に合流する。
+            //       例) start:(9,0) end:(10,4) text="    " (auto-indent付きCtrl+Z)
+            //           → BM@10 は新しい line 9 に移動すべき
+            //   (B) startChar > 0 かつ endChar === 0:
+            //       endLine の全内容が startLine に吸収される。
+            //       例) start:(5,3) end:(8,0) text="" (複数行選択Delete)
+            //           → BM@8 は line 5 に移動すべき
+            //
+            // 【旧実装の問題】rescue を「startChar > 0 のとき」に限定していたため、
+            //   ケース(A)で startChar=0 のとき rescue がスキップされ、
+            //   BM が削除範囲として除去されるバグがあった。
+            let rescuedToStartLine = false;
+
+            // ケース (A): endChar > 0
+            if (endChar > 0) {
+              const rescueLine = effectiveEndLine; // endChar > 0 なら effectiveEndLine = endLine
+              const bmOnRescue = bookmarks[relativePath].find(bm => bm.line === rescueLine);
+              const bmOnStart  = bookmarks[relativePath].find(bm => bm.line === startLine);
+
+              if (bmOnRescue) {
+                if (bmOnStart) {
+                  // 両行にBMがある → ラベルをマージ（bmOnRescue は下のfilterで除去）
+                  if (bmOnRescue.label) {
+                    bmOnStart.label = bmOnStart.label
+                      ? `${bmOnStart.label} | ${bmOnRescue.label}`
+                      : bmOnRescue.label;
+                  }
+                } else {
+                  // startLine にBMがない → rescueLine のBMを startLine に移動
+                  bmOnRescue.line = startLine;
+                  rescuedToStartLine = true;
+                }
+                needsUpdate = true;
+              }
+            }
+
+            // ケース (B): startChar > 0 かつ endChar === 0
+            if (startChar > 0 && endChar === 0) {
+              const rescueLine = endLine;
+              const bmOnRescue = bookmarks[relativePath].find(bm => bm.line === rescueLine);
+              const bmOnStart  = bookmarks[relativePath].find(bm => bm.line === startLine);
+
+              if (bmOnRescue) {
+                if (bmOnStart) {
+                  if (bmOnRescue.label) {
+                    bmOnStart.label = bmOnStart.label
+                      ? `${bmOnStart.label} | ${bmOnRescue.label}`
+                      : bmOnRescue.label;
+                  }
+                } else {
+                  bmOnRescue.line = startLine;
+                  rescuedToStartLine = true;
+                }
+                needsUpdate = true;
+              }
+            }
+
             const before = bookmarks[relativePath].length;
             bookmarks[relativePath] = bookmarks[relativePath].filter(bm => {
-              if (bm.line < startLine)        return true; // 変更より上: 保持
-              // startChar > 0 のとき startLine 自体の先頭部分は消えていない。
-              // 例) start(5,5) end(7,8) → 5行目の先頭5文字は残る → bm.line===5 は保持。
-              if (bm.line === startLine && startChar > 0) return true;
+              if (bm.line < startLine) return true; // 変更より上: 保持
+              // startLine を保持する条件:
+              //   startChar > 0 → startLine 先頭が残っている
+              //   rescuedToStartLine → endLine のBMをここに移動済み
+              if (bm.line === startLine && (startChar > 0 || rescuedToStartLine)) return true;
+              // rescue 済みの元の位置を除去
+              if (startChar > 0 && endChar === 0 && bm.line === endLine) return false;
+              if (endChar > 0 && bm.line === effectiveEndLine) return false;
               if (bm.line > effectiveEndLine) return true; // 変更より下: 保持（後でシフト）
-              return false;                                 // 削除範囲内: 除去
+              return false;                                // 削除範囲内: 除去
             });
             if (bookmarks[relativePath].length !== before) {
               needsUpdate = true;
@@ -413,9 +679,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         // ── ② 行数が変化した場合: 変更より下にあるブックマークをシフト ────
         if (lineDiff !== 0) {
-          // シフト基準行の計算:
-          //   削除がある場合 → 削除が終わった行 (effectiveEndLine) より後をシフト
-          //   削除がない場合 → 挿入開始行 (startLine) より後（または同行）をシフト
           const effectiveEndForShift =
             deletedLineCount > 0
               ? (endChar === 0 ? endLine - 1 : endLine)
@@ -424,17 +687,13 @@ export function activate(context: vscode.ExtensionContext) {
           // 行の先頭 (startChar === 0) に純粋に行が挿入された場合:
           //   その行自体のブックマークも下に追い出す必要がある。
           //   例) 5行目の先頭で Enter → 5行目のブックマークは6行目へ。
-          //   ただし選択範囲がある場合（deletedLineCount > 0）は
-          //   その行の内容が置き換わっているので追い出し不要（①で除去済み）。
           const pushCurrentLine = startChar === 0 && deletedLineCount === 0;
 
           for (const bm of bookmarks[relativePath]) {
             if (pushCurrentLine && bm.line === startLine) {
-              // ブックマーク行の先頭への挿入 → ブックマークも押し下げる
               bm.line += lineDiff;
               needsUpdate = true;
             } else if (bm.line > effectiveEndForShift) {
-              // 変更より後ろの行は全てシフト
               bm.line += lineDiff;
               needsUpdate = true;
             }
@@ -444,7 +703,10 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (needsUpdate) {
         saveBookmarks(bookmarks);
-        provider.updateDecorations(editor);
+        // 同じドキュメントを開いている全エディタを更新（分割ペイン対応）
+        vscode.window.visibleTextEditors
+          .filter(e => e.document === event.document)
+          .forEach(e => provider.updateDecorations(e));
         provider.refresh();
       }
     })
