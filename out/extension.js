@@ -48,6 +48,23 @@ function showInfo(message) {
         vscode.window.showInformationMessage(message);
     }
 }
+// 🔧 FIX(security): core-anchor.icons.* はワークスペース単位の .vscode/settings.json でも
+// 上書き可能な設定のため、信頼されていない（Workspace Trust未許可の）ワークスペースを開いた場合、
+// ワークスペース外の任意パスをアイコンとして参照させない。
+function isIconPathAllowed(absolutePath) {
+    if (vscode.workspace.isTrusted) {
+        return true;
+    }
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+        return false;
+    }
+    const normalized = path.normalize(absolutePath);
+    return workspaceFolders.some(folder => {
+        const root = path.normalize(folder.uri.fsPath);
+        return normalized === root || normalized.startsWith(root + path.sep);
+    });
+}
 // カスタムアイコンパスを取得する関数
 function getIconPath(context, iconType) {
     const config = vscode.workspace.getConfiguration('core-anchor');
@@ -61,14 +78,11 @@ function getIconPath(context, iconType) {
                 absolutePath = path.join(workspaceFolders[0].uri.fsPath, customPath);
             }
         }
-        if (fs.existsSync(absolutePath)) {
+        if (fs.existsSync(absolutePath) && isIconPathAllowed(absolutePath)) {
             return absolutePath;
         }
-        else {
-        }
     }
-    const defaultPath = context.asAbsolutePath(path.join('resources', `bookmark-${iconType}.png`));
-    return defaultPath;
+    return context.asAbsolutePath(path.join('resources', `bookmark-${iconType}.png`));
 }
 // デコレーションタイプを更新する関数
 function updateDecorationTypes(context, provider) {
@@ -439,6 +453,19 @@ function activate(context) {
                 .filter(e => e.document === editor.document)
                 .forEach(e => provider.updateDecorations(e));
         }
+    }));
+    // 🔧 FIX: SSH Remote 環境などで接続が一瞬切れて復帰した際、
+    // onDidChangeActiveTextEditor や onDidChangeTextDocument のどちらも発火しないまま
+    // エディタ側のガター装飾（setDecorationsで設定した内容）だけが失われるケースがある。
+    // ウィンドウのフォーカス状態や可視エディタの集合が変化したタイミングでも
+    // 現在表示中の全エディタに対して装飾を再適用し、確実に復元されるようにする。
+    context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
+        if (state.focused) {
+            vscode.window.visibleTextEditors.forEach(e => provider.updateDecorations(e));
+        }
+    }));
+    context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors((editors) => {
+        editors.forEach(e => provider.updateDecorations(e));
     }));
     // ドキュメント変更時にブックマークの行番号を調整
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument((event) => {

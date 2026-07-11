@@ -2,7 +2,7 @@
   "name": "core-anchor",
   "displayName": "Core Anchor",
   "description": "Manage favorite files and bookmarks with a beautiful, customizable interface",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "uta-orange-1214",
   "author": {
     "name": "uta"
@@ -27,6 +27,21 @@
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In untrusted workspaces, custom icon paths (core-anchor.icons.*) that point outside the workspace folder are ignored. / 信頼されていないワークスペースでは、ワークスペース外を指すカスタムアイコンパス（core-anchor.icons.*）は無視されます。",
+      "restrictedConfigurations": [
+        "core-anchor.icons.default",
+        "core-anchor.icons.todo",
+        "core-anchor.icons.bug",
+        "core-anchor.icons.note",
+        "core-anchor.icons.important",
+        "core-anchor.icons.question",
+        "core-anchor.icons.all"
+      ]
+    }
+  },
   "contributes": {
     "commands": [
       {

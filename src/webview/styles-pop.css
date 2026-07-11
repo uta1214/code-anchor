@@ -1,4 +1,4 @@
-/* CSS変数定義 - Soft */
+/* CSS変数定義 - Pop */
 :root {
   /* Font Sizes */
   --font-size-section-title: 11px;
@@ -15,14 +15,14 @@
   --font-size-mode-btn: 11px;
   
   /* Spacing */
-  --spacing-section-margin: 14px;
+  --spacing-section-margin: 16px;
   --spacing-item-padding: 6px;
   --spacing-folder-indent: 0px;
   
   /* Border Radius */
-  --border-radius-section: 12px;
-  --border-radius-button: 8px;
-  --border-radius-input: 8px;
+  --border-radius-section: 14px;
+  --border-radius-button: 10px;
+  --border-radius-input: 10px;
   
   /* Icon Sizes */
   --icon-size-small: 12px;
@@ -38,21 +38,37 @@ body {
 }
 
 .section {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.005) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  border-radius: 12px;
-  margin-bottom: 14px;
+  background: linear-gradient(135deg, rgba(45, 36, 54, 0.6) 0%, rgba(37, 32, 48, 0.6) 100%);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 14px;
+  margin-bottom: 16px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  position: relative;
+}
+
+.section::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  padding: 2px;
+  background: linear-gradient(135deg, rgba(255, 107, 157, 0.13) 0%, rgba(192, 108, 255, 0.13) 50%, rgba(108, 159, 255, 0.13) 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
 .section-header {
   padding: 12px 14px 10px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(255, 107, 157, 0.1);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
+  z-index: 1;
   gap: 8px;
   min-height: 36px;
   cursor: pointer;
@@ -60,7 +76,7 @@ body {
 }
 
 .section-header:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
+  background: linear-gradient(180deg, rgba(255, 107, 157, 0.05) 0%, transparent 100%);
 }
 
 .section-title-wrapper {
@@ -75,6 +91,7 @@ body {
   font-size: 10px;
   transition: transform 0.2s;
   flex-shrink: 0;
+  color: #ff6b9d;
 }
 
 .section-content {
@@ -83,9 +100,12 @@ body {
 
 .section-title {
   font-size: var(--font-size-section-title);
-  font-weight: 600;
-  color: var(--vscode-descriptionForeground);
-  letter-spacing: 0.5px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 50%, #6c9fff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -122,27 +142,29 @@ body {
 }
 .search-container { 
   padding: 8px;
+  position: relative;
+  z-index: 1;
 }
 
 .search-input { 
   width: 100%; 
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 107, 157, 0.15);
   color: var(--vscode-input-foreground);
   font-family: var(--vscode-font-family);
   box-sizing: border-box;
   font-size: 11px;
-  border-radius: 8px;
+  border-radius: 10px;
   margin-bottom: 8px;
   transition: all 0.2s;
 }
 
 .search-input:focus { 
   outline: none;
-  background: rgba(0, 0, 0, 0.3);
-  border-color: rgba(14, 122, 202, 0.4);
-  box-shadow: 0 0 0 3px rgba(14, 122, 202, 0.1);
+  background: rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 107, 157, 0.4);
+  box-shadow: 0 0 0 4px rgba(255, 107, 157, 0.08);
 }
 
 .search-input::placeholder { 
@@ -152,17 +174,14 @@ body {
 .mode-switch { 
   display: flex; 
   gap: 4px;
-  background: rgba(0, 0, 0, 0.15);
-  padding: 3px;
-  border-radius: 8px;
   flex-shrink: 0;
   flex-wrap: wrap;
 }
 
 .mode-btn { 
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--vscode-descriptionForeground);
-  border: none;
   padding: 4px;
   cursor: pointer;
   font-size: 11px;
@@ -171,51 +190,57 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 5px;
+  border-radius: 6px;
   transition: all 0.2s;
   flex-shrink: 0;
   overflow: hidden;
 }
 
 .mode-btn:hover { 
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--vscode-foreground);
-  transform: scale(1.05);
+  background: rgba(255, 107, 157, 0.15);
+  border-color: rgba(255, 107, 157, 0.3);
+  color: #ff6b9d;
+  transform: scale(1.08);
 }
 
 .mode-btn.active { 
-  background: linear-gradient(135deg, #0e7aca 0%, #0a5a8f 100%);
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
+  border-color: transparent;
   color: #fff;
-  box-shadow: 0 2px 6px rgba(14, 122, 202, 0.3);
+  box-shadow: 0 4px 12px rgba(255, 107, 157, 0.4);
 }
 
 .depth-btn {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--vscode-descriptionForeground);
-  border: none;
   padding: 4px;
   cursor: pointer;
   font-size: 11px;
   font-weight: bold;
   min-width: 24px;
   height: 24px;
-  border-radius: 5px;
+  border-radius: 6px;
   transition: all 0.2s;
   flex-shrink: 0;
 }
 
 .depth-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--vscode-foreground);
-  transform: scale(1.05);
+  background: rgba(255, 107, 157, 0.15);
+  border-color: rgba(255, 107, 157, 0.3);
+  color: #ff6b9d;
+  transform: scale(1.08);
 }
 
 .depth-display {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   min-width: 20px;
   text-align: center;
-  color: var(--vscode-foreground);
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
   flex-shrink: 0;
 }
 
@@ -223,20 +248,22 @@ body {
   padding: 0 8px 8px;
   display: flex; 
   flex-direction: column; 
-  gap: 6px; 
+  gap: 6px;
+  position: relative;
+  z-index: 1;
 }
 
 .toggle-add-btn { 
   width: 100%;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--vscode-button-secondaryForeground);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 107, 157, 0.15);
+  color: var(--vscode-foreground);
   font-size: 10px;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 10px;
   transition: all 0.2s;
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -244,28 +271,32 @@ body {
 }
 
 .toggle-add-btn:hover { 
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 107, 157, 0.1);
+  border-color: rgba(255, 107, 157, 0.3);
   transform: translateY(-1px);
 }
 
 .quick-add-btn { 
-  background: linear-gradient(135deg, #0e7aca 0%, #0a5a8f 100%);
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
   border-color: transparent;
   color: #fff;
-  box-shadow: 0 2px 6px rgba(14, 122, 202, 0.3);
+  box-shadow: 0 4px 12px rgba(255, 107, 157, 0.4);
 }
 
 .quick-add-btn:hover { 
-  box-shadow: 0 4px 12px rgba(14, 122, 202, 0.4);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.5);
 }
 
 .add-form { 
   display: none; 
   margin: 0 8px 8px;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 107, 157, 0.15);
+  border-radius: 10px;
+  position: relative;
+  z-index: 1;
 }
 
 .add-form.active { 
@@ -274,32 +305,33 @@ body {
 
 .add-form input { 
   width: 100%; 
-  padding: 7px 10px;
+  padding: 8px 12px;
   margin-bottom: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.25);
   color: var(--vscode-input-foreground);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 107, 157, 0.15);
   font-family: var(--vscode-font-family);
   box-sizing: border-box;
   font-size: 11px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .add-form button { 
-  background: linear-gradient(135deg, #0e7aca 0%, #0a5a8f 100%);
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
   color: #fff;
   border: none;
-  padding: 7px 12px;
+  padding: 8px 12px;
   cursor: pointer;
   width: 100%;
   font-size: 10px;
-  border-radius: 6px;
-  font-weight: 500;
-  box-shadow: 0 2px 6px rgba(14, 122, 202, 0.3);
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(255, 107, 157, 0.4);
 }
 
 .add-form button:hover { 
-  box-shadow: 0 4px 12px rgba(14, 122, 202, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.5);
 }
 
 .item { 
@@ -311,10 +343,11 @@ body {
   position: relative;
   transition: all 0.2s;
   cursor: pointer;
+  z-index: 1;
 }
 
 .item:hover { 
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 107, 157, 0.08);
 }
 
 .item-content { 
@@ -327,7 +360,7 @@ body {
   font-size: 10px;
   color: var(--vscode-foreground);
   margin-bottom: 2px;
-  font-weight: 400;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -361,14 +394,13 @@ body {
 }
 
 .btn { 
-  background: none; 
-  border: none; 
-  color: var(--vscode-foreground); 
+  background: rgba(255, 107, 157, 0.1); 
+  border: 1px solid rgba(255, 107, 157, 0.2);
+  color: #ff6b9d; 
   cursor: pointer; 
   padding: 4px 6px;
-  opacity: 0.6; 
   font-size: 11px;
-  border-radius: 4px;
+  border-radius: 5px;
   transition: all 0.15s;
   display: flex;
   align-items: center;
@@ -381,31 +413,35 @@ body {
 }
 
 .btn:hover { 
-  opacity: 1; 
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 107, 157, 0.2);
+  border-color: rgba(255, 107, 157, 0.4);
+  transform: scale(1.05);
 }
 
 .folder-group { 
   margin-bottom: 6px;
+  position: relative;
+  z-index: 1;
 }
 
 .folder-header { 
   display: flex; 
   align-items: center; 
   padding: 8px 10px;
-  min-height: 38px;
+  min-height: 40px;
   cursor: pointer; 
   user-select: none; 
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
-  transition: all 0.2s;
+  background: linear-gradient(135deg, rgba(255, 107, 157, 0.05) 0%, rgba(192, 108, 255, 0.05) 100%);
+  border: 1px solid rgba(255, 107, 157, 0.15);
+  border-radius: 10px;
+  transition: all 0.25s;
   gap: 8px;
 }
 
 .folder-header:hover { 
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  background: linear-gradient(135deg, rgba(255, 107, 157, 0.1) 0%, rgba(192, 108, 255, 0.1) 100%);
+  border-color: rgba(255, 107, 157, 0.3);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.15);
 }
 
 .folder-icon { 
@@ -413,7 +449,7 @@ body {
   font-size: 9px;
   transition: transform 0.2s;
   display: inline-block;
-  color: var(--vscode-foreground);
+  color: #ff6b9d;
   flex-shrink: 0;
 }
 
@@ -423,7 +459,7 @@ body {
 
 .folder-name { 
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--vscode-foreground);
   flex: 1;
   white-space: nowrap;
@@ -433,19 +469,20 @@ body {
 }
 
 .folder-count { 
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-  padding: 2px 7px;
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
+  padding: 2px 8px;
   border-radius: 10px;
   font-size: 9px;
-  color: var(--vscode-descriptionForeground);
-  font-weight: 600;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(255, 107, 157, 0.3);
   flex-shrink: 0;
 }
 
 .folder-items { 
   padding-left: 0;
   display: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid rgba(255, 107, 157, 0.1);
   margin-top: 6px;
   padding-top: 4px;
 }
@@ -456,6 +493,8 @@ body {
 
 .file-group { 
   margin-bottom: 6px;
+  position: relative;
+  z-index: 1;
 }
 
 .file-header { 
@@ -464,17 +503,18 @@ body {
   padding: 8px 10px;
   cursor: pointer; 
   user-select: none; 
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
-  transition: all 0.2s;
+  background: linear-gradient(135deg, rgba(255, 107, 157, 0.05) 0%, rgba(192, 108, 255, 0.05) 100%);
+  border: 1px solid rgba(255, 107, 157, 0.15);
+  border-radius: 10px;
+  transition: all 0.25s;
   gap: 8px;
 }
 
 .file-header:hover { 
-  background: rgba(255, 255, 255, 0.05);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  background: linear-gradient(135deg, rgba(255, 107, 157, 0.1) 0%, rgba(192, 108, 255, 0.1) 100%);
+  border-color: rgba(255, 107, 157, 0.3);
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.15);
 }
 
 .file-icon { 
@@ -483,7 +523,7 @@ body {
   transition: transform 0.2s;
   flex-shrink: 0;
   display: inline-block;
-  color: var(--vscode-foreground);
+  color: #c06cff;
   flex-shrink: 0;
 }
 
@@ -493,7 +533,7 @@ body {
 
 .file-name { 
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--vscode-foreground);
   flex: 1;
   white-space: nowrap;
@@ -503,19 +543,20 @@ body {
 }
 
 .file-count { 
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
-  padding: 2px 7px;
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
+  padding: 2px 8px;
   border-radius: 10px;
   font-size: 9px;
-  color: var(--vscode-descriptionForeground);
-  font-weight: 600;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(255, 107, 157, 0.3);
   flex-shrink: 0;
 }
 
 .file-items { 
   padding-left: 0;
   display: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid rgba(255, 107, 157, 0.1);
   margin-top: 6px;
   padding-top: 4px;
 }
@@ -527,10 +568,12 @@ body {
 .edit-form { 
   display: none; 
   padding: 8px;
-  background: rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 107, 157, 0.15);
   margin-top: 4px;
-  border-radius: 8px;
+  border-radius: 10px;
+  position: relative;
+  z-index: 1;
 }
 
 .edit-form.active { 
@@ -540,15 +583,15 @@ body {
 .edit-form input, 
 .edit-form select { 
   width: 100%; 
-  padding: 7px 10px;
+  padding: 8px 12px;
   margin-bottom: 6px;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.25);
   color: var(--vscode-input-foreground);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 107, 157, 0.15);
   font-family: var(--vscode-font-family);
   box-sizing: border-box;
   font-size: 11px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .edit-form-buttons { 
@@ -559,37 +602,40 @@ body {
 
 .edit-form-buttons button { 
   flex: 1; 
-  padding: 7px 12px;
+  padding: 8px 12px;
   cursor: pointer; 
   border: none; 
   font-size: 10px;
-  border-radius: 6px;
-  font-weight: 500;
+  border-radius: 8px;
+  font-weight: 600;
 }
 
 .save-btn { 
-  background: linear-gradient(135deg, #0e7aca 0%, #0a5a8f 100%);
+  background: linear-gradient(135deg, #ff6b9d 0%, #c06cff 100%);
   color: #fff;
-  box-shadow: 0 2px 6px rgba(14, 122, 202, 0.3);
+  box-shadow: 0 4px 12px rgba(255, 107, 157, 0.4);
 }
 
 .save-btn:hover { 
-  box-shadow: 0 4px 12px rgba(14, 122, 202, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.5);
 }
 
 .cancel-btn { 
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--vscode-foreground);
+  border: 1px solid rgba(255, 107, 157, 0.15);
 }
 
 .cancel-btn:hover { 
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 107, 157, 0.1);
+  border-color: rgba(255, 107, 157, 0.3);
 }
 
 .separator { 
   height: 1px;
-  background: rgba(255, 255, 255, 0.05);
-  margin: 14px 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 107, 157, 0.3) 50%, transparent 100%);
+  margin: 16px 0;
 }
 
 .empty-text { 
@@ -603,10 +649,13 @@ body {
   font-size: 9px;
   color: var(--vscode-descriptionForeground);
   padding: 4px 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.2);
   margin: 0 8px 8px;
   font-family: 'Consolas', monospace;
-  border-radius: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  z-index: 1;
 }
 
 .custom-select { 
@@ -617,23 +666,23 @@ body {
 
 .custom-select-trigger { 
   width: 100%; 
-  padding: 7px 10px;
-  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
   color: var(--vscode-input-foreground);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 107, 157, 0.15);
   cursor: pointer; 
   display: flex; 
   align-items: center; 
   justify-content: space-between; 
   box-sizing: border-box;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 11px;
   transition: all 0.2s;
 }
 
 .custom-select-trigger:hover { 
-  background: rgba(0, 0, 0, 0.3);
-  border-color: rgba(14, 122, 202, 0.3);
+  background: rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 107, 157, 0.3);
 }
 
 .custom-select-value { 
@@ -660,13 +709,13 @@ body {
   left: 0; 
   right: 0; 
   background: var(--vscode-dropdown-background);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 107, 157, 0.2);
   max-height: 200px; 
   overflow-y: auto; 
   z-index: 1000;
-  border-radius: 6px;
+  border-radius: 8px;
   margin-top: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.15);
 }
 
 .custom-select-options.active { 
@@ -674,7 +723,7 @@ body {
 }
 
 .custom-select-option { 
-  padding: 7px 10px;
+  padding: 8px 12px;
   cursor: pointer; 
   display: flex; 
   align-items: center; 
@@ -684,18 +733,18 @@ body {
 }
 
 .custom-select-option:hover { 
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 107, 157, 0.1);
 }
 
 .context-menu { 
   display: none; 
   position: fixed; 
   background: var(--vscode-menu-background);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); 
+  border: 1px solid rgba(255, 107, 157, 0.2);
+  box-shadow: 0 6px 16px rgba(255, 107, 157, 0.15); 
   z-index: 10000; 
   min-width: 150px;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -704,7 +753,7 @@ body {
 }
 
 .context-menu-item { 
-  padding: 7px 12px;
+  padding: 8px 12px;
   cursor: pointer; 
   font-size: 11px;
   color: var(--vscode-menu-foreground);
@@ -712,12 +761,12 @@ body {
 }
 
 .context-menu-item:hover { 
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 107, 157, 0.1);
 }
 
 .context-menu-separator { 
   height: 1px; 
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 107, 157, 0.15);
   margin: 4px 0; 
 }
 
@@ -733,7 +782,7 @@ body {
   
   .folder-count, .file-count {
     font-size: 8px;
-    padding: 1px 5px;
+    padding: 1px 6px;
   }
   
   .item-file {
@@ -751,7 +800,7 @@ body {
   
   .search-input {
     font-size: 10px;
-    padding: 7px 9px;
+    padding: 7px 10px;
   }
   
   .debug-info {
@@ -803,7 +852,6 @@ body {
   
   .depth-display {
     font-size: 10px;
-    min-width: 16px;
   }
   
   .section-header {

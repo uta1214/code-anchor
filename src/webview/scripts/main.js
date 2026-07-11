@@ -394,11 +394,6 @@ window.addEventListener('message', event => {
     }
   } else if (msg.command === 'setHighlightedBookmark') {
     // ブックマークをハイライト
-    console.log('[Core Anchor] Set highlighted bookmark:', { 
-      filePath: msg.filePath, 
-      line: msg.line 
-    });
-    
     if (typeof highlightedBookmark !== 'undefined') {
       highlightedBookmark = { filePath: msg.filePath, line: msg.line };
       
@@ -406,7 +401,6 @@ window.addEventListener('message', event => {
       const fileId = safeId(msg.filePath);
       const fileItems = document.getElementById('fileitems-' + fileId);
       if (fileItems && !fileItems.classList.contains('expanded')) {
-        console.log('[Core Anchor] Auto-expanding file group:', fileId);
         toggleFileGroup(fileId);
       }
       

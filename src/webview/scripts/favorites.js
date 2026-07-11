@@ -432,14 +432,6 @@ function renderVirtualFolder(folder, files, container, depth = 0, allFolderFiles
   // fileOrder から存在しないファイルを削除（クリーンアップ）
   fileOrder = fileOrder.filter(path => files[path]);
   
-  console.log('[Core Anchor] Render folder files:', {
-    folderId: folder.id,
-    folderName: folder.name,
-    filesInFolder: Object.keys(files),
-    fileOrder: fileOrder,
-    hasFileOrder: !!(window.favoritesMeta && window.favoritesMeta.fileOrder && window.favoritesMeta.fileOrder[folderKey])
-  });
-  
   // fileOrder に存在するファイルを順番通りにレンダリング
   fileOrder.forEach(path => {
     if (files[path]) {
@@ -1049,12 +1041,8 @@ function renderFavoriteFile(path, data, container, folderId) {
   const contentDiv = document.createElement('div');
   contentDiv.className = 'item-content';
   
-  // ダブルクリックでリネーム
-  // シングルクリックでファイルを開く (Ctrl+クリックで新規エディタグループで開く)
-  contentDiv.onclick = (e) => {
-    const openToSide = e.ctrlKey || e.metaKey;
-    openFile(path, openToSide);
-  };
+  // 🔧 FIX: ファイルを開く処理は hover の光る範囲（.item 全体）と一致させるため、
+  // 下記の itemDiv 全体へのクリックリスナーに統合した（Ctrl/Cmd+クリックで横に開くのは維持）。
   
   contentDiv.innerHTML = `
     <div class="item-file">${fileIconHtml}${escapeHtml(fileName)}</div>
@@ -1076,12 +1064,17 @@ function renderFavoriteFile(path, data, container, folderId) {
   itemDiv.appendChild(contentDiv);
   itemDiv.appendChild(buttonsDiv);
   
-  // クリックで選択状態にする
+  // 🔧 FIX: hover で光る範囲（.item 全体）をクリック対象にし、ファイルを開く＋選択状態にする。
+  // 編集・削除ボタン（.item-buttons）上のクリックは無視する。
   itemDiv.addEventListener('click', (e) => {
-    if (!e.target.closest('.item-buttons') && e.detail === 1) {
+    if (e.target.closest('.item-buttons')) return;
+    if (e.detail === 1) {
+      const openToSide = e.ctrlKey || e.metaKey;
+      openFile(path, openToSide);
+
       selectedItemPath = path;
       selectedFolderId = null;
-      
+
       document.querySelectorAll('.folder-header').forEach(el => el.classList.remove('selected'));
       document.querySelectorAll('.item').forEach(el => el.classList.remove('selected'));
       itemDiv.classList.add('selected');
@@ -1500,8 +1493,15 @@ function updateVirtualFolderSelect() {
     const opt = document.createElement('div');
     opt.className = 'custom-select-option';
     opt.onclick = () => selectVirtualFolder(folder.id, folder.name);
-    const folderColor = folder.color || 'currentColor';
-    opt.innerHTML = '<span style="color: ' + folderColor + ';">' + FOLDER_ICON + ' ' + escapeHtml(folder.name) + '</span>';
+
+    // 🔧 FIX(security): folder.color を文字列結合で style 属性に直接埋め込んでいたため、
+    // " を含む値が万一混入すると属性から脱出できてしまう懸念があった。
+    // CSSOM (style.color への直接代入) を使えば、不正な値は単に無視されるだけで安全。
+    const colorSpan = document.createElement('span');
+    colorSpan.style.color = folder.color || 'currentColor';
+    colorSpan.innerHTML = FOLDER_ICON + ' ' + escapeHtml(folder.name);
+
+    opt.appendChild(colorSpan);
     options.appendChild(opt);
   });
 }

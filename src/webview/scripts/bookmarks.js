@@ -145,7 +145,6 @@ function removeBookmark(filePath, line) {
 function jumpToBookmark(filePath, line) {
   // ハイライトを設定（バックエンドからの通知を待たずに先行設定）
   highlightedBookmark = { filePath, line };
-  console.log('[Core Anchor] Jump to bookmark:', { filePath, line });
   vscode.postMessage({ command: 'jumpToBookmark', filePath, line });
 }
 
@@ -336,7 +335,8 @@ function updateBookmarks(bookmarks) {
       const itemContent = document.createElement('div');
       itemContent.className = 'item-content';
       // title属性を削除（ホバー表示なし）
-      itemContent.onclick = () => jumpToBookmark(filePath, mark.line);
+      // 🔧 FIX: クリックハンドラは hover の光る範囲（.item 全体）と一致させるため、
+      // 下記の itemDiv 全体へのクリックリスナーに統合した。
       
       const itemDesc = document.createElement('div');
       itemDesc.className = 'item-desc';
@@ -376,6 +376,13 @@ function updateBookmarks(bookmarks) {
       
       itemDiv.appendChild(itemContent);
       itemDiv.appendChild(itemButtons);
+      
+      // 🔧 FIX: hover で光る範囲（.item 全体）をそのままクリック対象にする。
+      // 編集・削除ボタン（.item-buttons）上のクリックはジャンプさせない。
+      itemDiv.addEventListener('click', (e) => {
+        if (e.target.closest('.item-buttons')) return;
+        jumpToBookmark(filePath, mark.line);
+      });
       
       const editForm = document.createElement('div');
       editForm.id = 'edit-bm-' + bmId;

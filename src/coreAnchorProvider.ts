@@ -32,7 +32,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   reloadWebview() {
     if (this._view) {
       try {
-        this._view.webview.html = this.getHtmlContent();
+        this._view.webview.html = this.getHtmlContent(this._view.webview);
         this.sendIconPaths(this._view);
         this.sendFavoriteMode();
         const folderDepth = this.context.workspaceState.get('folderDepth', 1);
@@ -73,7 +73,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     };
 
     try {
-      webviewView.webview.html = this.getHtmlContent();
+      webviewView.webview.html = this.getHtmlContent(webviewView.webview);
     } catch (error) {
       console.error('Error setting webview HTML:', error);
     }
@@ -235,6 +235,25 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     this.refresh();
   }
 
+  // 🔧 FIX(security): core-anchor.icons.* はワークスペース単位の .vscode/settings.json でも
+  // 上書き可能な設定のため、信頼されていない（Workspace Trust未許可の）ワークスペースを開いた場合、
+  // ワークスペース外の任意ディレクトリを Webview の localResourceRoots / アイコン読み込み対象に
+  // 含めてしまわないようにする。ワークスペースが信頼されている場合は従来通り絶対パスも許可する。
+  private isIconPathAllowed(absolutePath: string): boolean {
+    if (vscode.workspace.isTrusted) {
+      return true;
+    }
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+      return false;
+    }
+    const normalized = path.normalize(absolutePath);
+    return workspaceFolders.some(folder => {
+      const root = path.normalize(folder.uri.fsPath);
+      return normalized === root || normalized.startsWith(root + path.sep);
+    });
+  }
+
   private getCustomIconDirectories(): vscode.Uri[] {
     const dirs = new Set<string>();
     const config = vscode.workspace.getConfiguration('core-anchor');
@@ -253,7 +272,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
           }
         }
         
-        if (fs.existsSync(absolutePath)) {
+        if (fs.existsSync(absolutePath) && this.isIconPathAllowed(absolutePath)) {
           const dir = path.dirname(absolutePath);
           dirs.add(dir);
         }
@@ -1114,6 +1133,16 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // 🔧 FIX(security): color は webview 側から postMessage で渡ってくる値であり、
+    // 保存後は Webview 側で HTML の style 属性値として使われる。
+    // "currentColor" または #RRGGBB / #RGB 形式のみを許可し、それ以外は無視することで、
+    // 将来の実装変更等で不正な値がそのまま描画に使われる事態を防ぐ。
+    const isValidColor = color === 'currentColor' || /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color);
+    if (!isValidColor) {
+      vscode.window.showErrorMessage('Core Anchor: Invalid color value');
+      return;
+    }
+
     folder.color = color;
     this.saveFavoritesMeta(meta);
     this.refresh();
@@ -1277,13 +1306,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     targetFile: string, 
     position: 'before' | 'after'
   ) {
-    console.log('[Core Anchor Backend] reorderFilesInFolder:', { 
-      folderId, 
-      draggedFile, 
-      targetFile, 
-      position 
-    });
-
     const meta = this.loadFavoritesMeta();
     
     // fileOrder を初期化（存在しない場合）
@@ -1327,8 +1349,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     meta.fileOrder[folderKey] = fileOrder;
     this.saveFavoritesMeta(meta);
     this.refresh();
-    
-    console.log('[Core Anchor Backend] File reorder complete:', { folderKey, fileOrder });
   }
 
   // フォルダ並び替え（同一階層内）
@@ -1338,13 +1358,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     position: 'before' | 'after',
     parentId: string | null
   ) {
-    console.log('[Core Anchor Backend] reorderFolders:', { 
-      draggedFolderId, 
-      targetFolderId, 
-      position, 
-      parentId 
-    });
-
     const meta = this.loadFavoritesMeta();
     if (!meta.virtualFolders) {
       return;
@@ -1361,7 +1374,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     // draggedFolder を削除
     const draggedIndex = sameLevelFolders.findIndex(f => f.id === draggedFolderId);
     if (draggedIndex === -1) {
-      console.log('[Core Anchor Backend] Dragged folder not found');
       return;
     }
     const draggedFolder = sameLevelFolders.splice(draggedIndex, 1)[0];
@@ -1369,7 +1381,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     // targetFolder の位置を探して挿入
     const targetIndex = sameLevelFolders.findIndex(f => f.id === targetFolderId);
     if (targetIndex === -1) {
-      console.log('[Core Anchor Backend] Target folder not found');
       return;
     }
     
@@ -1383,11 +1394,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     
     this.saveFavoritesMeta(meta);
     this.refresh();
-    
-    console.log('[Core Anchor Backend] Folder reorder complete:', { 
-      parentId, 
-      folderOrder: sameLevelFolders.map(f => f.name) 
-    });
   }
 
 
@@ -1459,7 +1465,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         }
       }
       
-      if (fs.existsSync(absolutePath)) {
+      if (fs.existsSync(absolutePath) && this.isIconPathAllowed(absolutePath)) {
         return absolutePath;
       }
     }
@@ -1523,12 +1529,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     if (label === undefined) return;
 
     const bookmarksPath = this.getBookmarksPath();
-    let bookmarks: BookmarksData = {};
-
-    if (fs.existsSync(bookmarksPath)) {
-      const content = fs.readFileSync(bookmarksPath, 'utf-8');
-      bookmarks = JSON.parse(content);
-    }
+    let bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
     if (!bookmarks[filePath]) {
       bookmarks[filePath] = [];
@@ -1843,12 +1844,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     }
 
     const bookmarksPath = this.getBookmarksPath();
-    let bookmarks: BookmarksData = {};
-
-    if (fs.existsSync(bookmarksPath)) {
-      const content = fs.readFileSync(bookmarksPath, 'utf-8');
-      bookmarks = JSON.parse(content);
-    }
+    let bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
     if (!bookmarks[filePath]) {
       bookmarks[filePath] = [];
@@ -1901,8 +1897,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     const bookmarksPath = this.getBookmarksPath();
     if (!fs.existsSync(bookmarksPath)) return;
 
-    const content = fs.readFileSync(bookmarksPath, 'utf-8');
-    const bookmarks: BookmarksData = JSON.parse(content);
+    const bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
     if (bookmarks[filePath]) {
       const index = bookmarks[filePath].findIndex(b => b.line === oldLine);
@@ -1933,8 +1928,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     const bookmarksPath = this.getBookmarksPath();
     if (!fs.existsSync(bookmarksPath)) return;
 
-    const content = fs.readFileSync(bookmarksPath, 'utf-8');
-    const bookmarks: BookmarksData = JSON.parse(content);
+    const bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
     if (bookmarks[filePath]) {
       bookmarks[filePath] = bookmarks[filePath].filter(b => b.line !== line);
@@ -1957,8 +1951,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     const bookmarksPath = this.getBookmarksPath();
     if (!fs.existsSync(bookmarksPath)) return;
 
-    const content = fs.readFileSync(bookmarksPath, 'utf-8');
-    const bookmarks: BookmarksData = JSON.parse(content);
+    const bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
     if (bookmarks[filePath]) {
       const count = bookmarks[filePath].length;
@@ -2014,8 +2007,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
 
   // ブックマークをハイライト（public）
   highlightBookmark(filePath: string, line: number) {
-    console.log('[Core Anchor Backend] Highlight bookmark:', { filePath, line });
-    
     if (this._view) {
       this._view.webview.postMessage({
         command: 'setHighlightedBookmark',
@@ -2042,12 +2033,30 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     fs.writeFileSync(bookmarksPath, JSON.stringify(bookmarks, null, 2));
   }
 
+  // 🔧 FIX(robustness): bookmarks.json の読み込みは複数箇所で行われているが、
+  // 一部は try/catch で保護されておらず、ファイルが破損している場合（クラッシュ・
+  // SSH切断中の書き込み・Gitコンフリクト等）に例外が伝播してコマンドが失敗し、
+  // 最悪の場合ブックマーク機能全体が動かなくなる恐れがあった。
+  // 読み込みを一元化し、パース失敗時は空データにフォールバックしつつユーザーに通知する。
+  private readBookmarksFileSafe(bookmarksPath: string): BookmarksData {
+    if (!bookmarksPath || !fs.existsSync(bookmarksPath)) {
+      return {};
+    }
+    try {
+      const content = fs.readFileSync(bookmarksPath, 'utf-8');
+      return JSON.parse(content);
+    } catch (error) {
+      console.error('Error loading bookmarks.json:', error);
+      vscode.window.showErrorMessage(
+        'Core Anchor: bookmarks.json is corrupted and could not be read. Please fix or remove .vscode/bookmarks.json.'
+      );
+      return {};
+    }
+  }
+
   private loadBookmarks(): BookmarksData {
     const bookmarksPath = this.getBookmarksPath();
-    if (!fs.existsSync(bookmarksPath)) return {};
-
-    const content = fs.readFileSync(bookmarksPath, 'utf-8');
-    const raw: BookmarksData = JSON.parse(content);
+    const raw = this.readBookmarksFileSafe(bookmarksPath);
 
     // Windows 環境で保存されたデータにバックスラッシュが混入している場合に備え、
     // すべてのキーをスラッシュ区切りに正規化する。
@@ -2058,8 +2067,8 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     return normalized;
   }
 
-  private getHtmlContent(): string {
-    return getHtmlContent();
+  private getHtmlContent(webview: vscode.Webview): string {
+    return getHtmlContent(webview);
   }
 
   // ショートカットでカーソル行のブックマーク情報をコード上にポップアップ表示
@@ -2172,11 +2181,6 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
       const bookmarks = this.loadBookmarks();
       const favoritesMeta = this.loadFavoritesMeta();
       const bookmarksMeta = this.loadBookmarksMeta();
-      
-      // デバッグ: virtualFolders のIDを確認
-      console.log('[Core Anchor Backend] Virtual folders IDs:', 
-        favoritesMeta.virtualFolders?.map(f => ({ id: f.id, name: f.name })) || []
-      );
       
       // ブックマークに行内容を追加
       const bookmarksWithContent: any = {};
