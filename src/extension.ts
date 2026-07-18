@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { CoreAnchorProvider } from './coreAnchorProvider';
-import { BookmarkIconType, BookmarksData, BookmarksMeta } from './types';
+import { BookmarkIconType, BookmarksData, BookmarksMeta, FavoriteFile, FavoritesMeta, VirtualFolder } from './types';
+import { isIconPathAllowed, sanitizeBookmarksData, sanitizeFavoritesData, generateVirtualFolderId } from './security';
 
 const decorationTypes: Map<BookmarkIconType, vscode.TextEditorDecorationType> = new Map();
 
@@ -15,23 +16,7 @@ function showInfo(message: string): void {
   }
 }
 
-// 🔧 FIX(security): core-anchor.icons.* はワークスペース単位の .vscode/settings.json でも
-// 上書き可能な設定のため、信頼されていない（Workspace Trust未許可の）ワークスペースを開いた場合、
-// ワークスペース外の任意パスをアイコンとして参照させない。
-function isIconPathAllowed(absolutePath: string): boolean {
-  if (vscode.workspace.isTrusted) {
-    return true;
-  }
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders) {
-    return false;
-  }
-  const normalized = path.normalize(absolutePath);
-  return workspaceFolders.some(folder => {
-    const root = path.normalize(folder.uri.fsPath);
-    return normalized === root || normalized.startsWith(root + path.sep);
-  });
-}
+// 🔧 FIX: isIconPathAllowed は security.ts に共通化（coreAnchorProvider.ts との重複実装を解消）
 
 // カスタムアイコンパスを取得する関数
 function getIconPath(context: vscode.ExtensionContext, iconType: BookmarkIconType): string {
@@ -99,24 +84,51 @@ function getBookmarksPath(): string {
   return path.join(vscodeFolder, 'bookmarks.json');
 }
 
+// 🔧 FIX(perf): onDidChangeTextDocument は「1文字編集するたび」に発火するため、
+// 素朴に毎回 loadBookmarks()（同期read + JSON.parse）を呼ぶと、ブックマークが
+// 存在しないファイルを編集している場合でも毎回ディスクI/Oが走ってしまい、
+// Remote-SSH/WSL/ネットワークドライブ等ではタイピング遅延の原因になりうる。
+// bookmarks.json の mtime をキャッシュし、ディスク上で実際に変化していない限り
+// 再読み込み・再パースをスキップする。mtime方式なら coreAnchorProvider.ts 側が
+// 保存した場合でも次回アクセス時に確実に検知できるため、二重実装でも整合性が保てる。
+let bookmarksCache: { path: string; mtimeMs: number; data: BookmarksData } | null = null;
+
 // ブックマークを読み込む
 function loadBookmarks(): BookmarksData {
   const bookmarksPath = getBookmarksPath();
-  if (!fs.existsSync(bookmarksPath)) return {};
-  
+  if (!bookmarksPath || !fs.existsSync(bookmarksPath)) {
+    bookmarksCache = null;
+    return {};
+  }
+
   try {
+    const stat = fs.statSync(bookmarksPath);
+    if (
+      bookmarksCache &&
+      bookmarksCache.path === bookmarksPath &&
+      bookmarksCache.mtimeMs === stat.mtimeMs
+    ) {
+      return bookmarksCache.data;
+    }
+
     const content = fs.readFileSync(bookmarksPath, 'utf-8');
-    const raw: BookmarksData = JSON.parse(content);
+    const parsed = JSON.parse(content);
 
     // Windows 環境で保存されたデータにバックスラッシュが混入している場合に備え、
     // すべてのキーをスラッシュ区切りに正規化する。
-    const normalized: BookmarksData = {};
-    for (const [key, value] of Object.entries(raw)) {
+    // 🔧 FIX(security): あわせて、bookmarks.json は共有リポジトリ経由の信頼できない入力
+    // でありうるため、型を強制する（sanitizeBookmarksData）。
+    const normalized: { [key: string]: any } = {};
+    for (const [key, value] of Object.entries(parsed)) {
       normalized[key.replace(/\\/g, '/')] = value;
     }
-    return normalized;
+    const sanitized = sanitizeBookmarksData(normalized);
+
+    bookmarksCache = { path: bookmarksPath, mtimeMs: stat.mtimeMs, data: sanitized };
+    return sanitized;
   } catch (error) {
     console.error('Error loading bookmarks:', error);
+    bookmarksCache = null;
     return {};
   }
 }
@@ -127,62 +139,126 @@ function saveBookmarks(bookmarks: BookmarksData) {
   if (!bookmarksPath) return; // ワークスペースがない場合はスキップ
   try {
     fs.writeFileSync(bookmarksPath, JSON.stringify(bookmarks, null, 2));
+    // 🔧 FIX(perf): 書き込み直後に mtime を取得してキャッシュも更新しておく。
+    // こうすることで、保存した直後に loadBookmarks() が呼ばれても再読込を省略できる。
+    const stat = fs.statSync(bookmarksPath);
+    bookmarksCache = { path: bookmarksPath, mtimeMs: stat.mtimeMs, data: bookmarks };
   } catch (error) {
     console.error('Error saving bookmarks:', error);
+    // 書き込みに失敗した場合、キャッシュとディスクの内容が食い違っている可能性があるため
+    // キャッシュを破棄し、次回は必ずディスクから読み直す。
+    bookmarksCache = null;
   }
 }
 
-// ブックマークをエクスポートする
-async function exportBookmarks(provider: CoreAnchorProvider): Promise<void> {
+type ExportScope = 'favorites' | 'bookmarks' | 'both';
+
+const SCOPE_PICK_ITEMS: (vscode.QuickPickItem & { value: ExportScope })[] = [
+  { label: '$(star) Favorites only', value: 'favorites' },
+  { label: '$(bookmark) Bookmarks only', value: 'bookmarks' },
+  { label: '$(files) Both', value: 'both' },
+];
+
+// 🆕 Favorites / Bookmarks / 両方 をエクスポートする（統合版）
+async function exportCoreAnchorData(provider: CoreAnchorProvider): Promise<void> {
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (!workspaceFolders) {
     vscode.window.showErrorMessage('Core Anchor: No workspace folder is open');
     return;
   }
 
-  const bookmarks = loadBookmarks();
-  const bookmarksMeta = provider.loadBookmarksMeta();
+  const scopeChoice = await vscode.window.showQuickPick(SCOPE_PICK_ITEMS, {
+    title: 'Export Core Anchor Data',
+    placeHolder: 'What would you like to export?',
+  });
+  if (!scopeChoice) return;
+  const scope = scopeChoice.value;
 
-  const exportData = {
-    version: '1.0',
+  const exportData: {
+    version: string;
+    exportedAt: string;
+    favorites?: { [key: string]: FavoriteFile };
+    favoritesMeta?: FavoritesMeta;
+    bookmarks?: BookmarksData;
+    bookmarksMeta?: BookmarksMeta;
+  } = {
+    version: '1.1',
     exportedAt: new Date().toISOString(),
-    bookmarks,
-    bookmarksMeta,
   };
 
-  const defaultUri = vscode.Uri.file(
-    path.join(workspaceFolders[0].uri.fsPath, 'core-anchor-bookmarks.json')
-  );
+  if (scope === 'favorites' || scope === 'both') {
+    exportData.favorites = provider.loadFavorites();
+    exportData.favoritesMeta = provider.loadFavoritesMeta();
+  }
+  if (scope === 'bookmarks' || scope === 'both') {
+    exportData.bookmarks = loadBookmarks();
+    exportData.bookmarksMeta = provider.loadBookmarksMeta();
+  }
+
+  const defaultName =
+    scope === 'favorites' ? 'core-anchor-favorites.json' :
+    scope === 'bookmarks' ? 'core-anchor-bookmarks.json' :
+    'core-anchor-data.json';
+
+  // 🔧 FIX: 以前は fsPath を文字列結合してから vscode.Uri.file() で包んでいたが、
+  // これだとリモート(WSL/SSH等)のスキームやauthority情報が失われ、
+  // 「file:///home/user/...」という実在しないローカルパスのURIになってしまっていた。
+  // vscode.Uri.joinPath はワークスペースURIのスキーム/authorityを正しく維持したまま
+  // パスを連結できるため、こちらを使う。
+  const defaultUri = vscode.Uri.joinPath(workspaceFolders[0].uri, defaultName);
 
   const uri = await vscode.window.showSaveDialog({
     defaultUri,
     filters: { 'JSON': ['json'] },
-    title: 'Export Core Anchor Bookmarks',
+    title: 'Export Core Anchor Data',
   });
 
   if (!uri) return;
 
+  // 🔧 FIX: Node.jsの fs はエクステンションホストが動作している側（Remote-SSH等では
+  // リモートのLinux側）のファイルシステムしか扱えない。showSaveDialogが返すURIは
+  // ローカル（クライアント側）のパスを指している場合があり、その場合 fs.writeFileSync は
+  // ENOENTで失敗する。vscode.workspace.fs はURIのスキームに応じて適切なファイルシステムに
+  // ディスパッチしてくれるため、常にこちらを使う。
   try {
-    fs.writeFileSync(uri.fsPath, JSON.stringify(exportData, null, 2));
-    showInfo(`Core Anchor: Bookmarks exported to ${path.basename(uri.fsPath)}`);
+    const bytes = Buffer.from(JSON.stringify(exportData, null, 2), 'utf-8');
+    await vscode.workspace.fs.writeFile(uri, bytes);
+    showInfo(`Core Anchor: Data exported to ${path.basename(uri.fsPath)}`);
   } catch (error) {
     vscode.window.showErrorMessage(`Core Anchor: Export failed — ${error}`);
   }
 }
 
-// ブックマークをインポートする
-async function importBookmarks(provider: CoreAnchorProvider): Promise<void> {
+// 🆕 Favorites / Bookmarks / 両方 をインポートする（統合版・入り口）
+// ファイルの中身を見て、Favorites/Bookmarksどちらのデータが含まれているかを自動判定する。
+// 後方互換: 旧バージョン（bookmarksのみを含むエクスポート）もそのまま読み込める。
+async function importCoreAnchorData(provider: CoreAnchorProvider): Promise<void> {
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+
+  // 🔧 FIX: exportCoreAnchorData と同じ形式（Uri.joinPath）の defaultUri を付与し、挙動を揃える。
+  const defaultUri = workspaceFolders
+    ? workspaceFolders[0].uri
+    : undefined;
+
+  // 🔧 FIX: VS Code の SimpleFileDialog はローカル表示の可否を「ファイル選択かフォルダ選択か」
+  // 等の条件で内部的に出し分けている。canSelectFiles/canSelectFolders を明示することで、
+  // exportCoreAnchorData（showSaveDialog、常にファイル選択扱い）と同じ判定になるようにする。
   const uris = await vscode.window.showOpenDialog({
+    defaultUri,
     filters: { 'JSON': ['json'] },
+    canSelectFiles: true,
+    canSelectFolders: false,
     canSelectMany: false,
-    title: 'Import Core Anchor Bookmarks',
+    title: 'Import Core Anchor Data',
   });
 
   if (!uris || uris.length === 0) return;
 
   let importData: any;
   try {
-    const content = fs.readFileSync(uris[0].fsPath, 'utf-8');
+    // 🔧 FIX: エクスポート同様、リモート環境でも正しく読み込めるよう vscode.workspace.fs を使う
+    const bytes = await vscode.workspace.fs.readFile(uris[0]);
+    const content = Buffer.from(bytes).toString('utf-8');
     importData = JSON.parse(content);
   } catch {
     vscode.window.showErrorMessage(
@@ -191,18 +267,57 @@ async function importBookmarks(provider: CoreAnchorProvider): Promise<void> {
     return;
   }
 
-  // バリデーション: version / bookmarks / bookmarksMeta が揃っているか確認
-  if (
-    typeof importData.version !== 'string' ||
-    typeof importData.bookmarks !== 'object' || importData.bookmarks === null ||
-    typeof importData.bookmarksMeta !== 'object' || importData.bookmarksMeta === null
-  ) {
+  // 🔧 FIX(security): インポートファイルは外部から受け取る信頼できない入力のため、
+  // 中身を使う前に型を強制し、__proto__ 等の危険なキーやbookmarksの不正な line 等を除去する。
+  if (importData && typeof importData.bookmarks === 'object' && importData.bookmarks !== null) {
+    importData.bookmarks = sanitizeBookmarksData(importData.bookmarks);
+  }
+  if (importData && typeof importData.favorites === 'object' && importData.favorites !== null) {
+    importData.favorites = sanitizeFavoritesData(importData.favorites);
+  }
+
+  const hasBookmarks =
+    typeof importData.bookmarks === 'object' && importData.bookmarks !== null &&
+    typeof importData.bookmarksMeta === 'object' && importData.bookmarksMeta !== null;
+  const hasFavorites =
+    typeof importData.favorites === 'object' && importData.favorites !== null &&
+    typeof importData.favoritesMeta === 'object' && importData.favoritesMeta !== null;
+
+  if (!hasBookmarks && !hasFavorites) {
     vscode.window.showErrorMessage(
       'Core Anchor: Invalid file format. This file does not appear to be a Core Anchor export.'
     );
     return;
   }
 
+  let scope: ExportScope;
+  if (hasBookmarks && hasFavorites) {
+    const scopeChoice = await vscode.window.showQuickPick(SCOPE_PICK_ITEMS, {
+      title: 'Import Core Anchor Data',
+      placeHolder: 'This file contains both Favorites and Bookmarks. What would you like to import?',
+    });
+    if (!scopeChoice) return;
+    scope = scopeChoice.value;
+  } else {
+    scope = hasFavorites ? 'favorites' : 'bookmarks';
+  }
+
+  if (scope === 'bookmarks' || scope === 'both') {
+    await importBookmarksData(provider, importData.bookmarks as BookmarksData, importData.bookmarksMeta as BookmarksMeta);
+  }
+  if (scope === 'favorites' || scope === 'both') {
+    await importFavoritesData(provider, importData.favorites as { [key: string]: FavoriteFile }, importData.favoritesMeta as FavoritesMeta);
+  }
+
+  provider.refresh();
+}
+
+// ブックマークのインポート処理（マージ/置き換え）
+async function importBookmarksData(
+  provider: CoreAnchorProvider,
+  importedBookmarks: BookmarksData,
+  importedMeta: BookmarksMeta
+): Promise<void> {
   const choice = await vscode.window.showQuickPick(
     [
       {
@@ -217,8 +332,8 @@ async function importBookmarks(provider: CoreAnchorProvider): Promise<void> {
       },
     ],
     {
-      title: 'Import Core Anchor Bookmarks',
-      placeHolder: 'How would you like to import?',
+      title: 'Import Bookmarks',
+      placeHolder: 'How would you like to import bookmarks?',
     }
   );
 
@@ -226,124 +341,227 @@ async function importBookmarks(provider: CoreAnchorProvider): Promise<void> {
 
   if (choice.value === 'replace') {
     // 既存データを丸ごと置き換え
-    saveBookmarks(importData.bookmarks as BookmarksData);
-    provider.saveBookmarksMeta(importData.bookmarksMeta as BookmarksMeta);
-  } else {
-    // ── Merge ────────────────────────────────────────────────────────────
-    // 1. コンフリクト（同ファイル＋同行番号）を検出
-    // 2. コンフリクトがあれば QuickPick (canPickMany) でユーザーに選択させる
-    //    - チェックあり → インポート側で上書き
-    //    - チェックなし → 既存を保持（デフォルト）
-    // 3. コンフリクトなしのBMは自動でマージ
-    const existing = loadBookmarks();
-    const existingMeta = provider.loadBookmarksMeta();
-
-    // ── コンフリクト検出 ──────────────────────────────────────────────
-    interface ConflictItem extends vscode.QuickPickItem {
-      filePath: string;
-      line: number;
-    }
-    const conflictItems: ConflictItem[] = [];
-
-    for (const [filePath, importedBMs] of Object.entries(importData.bookmarks as BookmarksData)) {
-      if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
-      if (!existing[filePath]) continue;
-      const existingLineMap = new Map(existing[filePath].map(bm => [bm.line, bm]));
-      for (const importedBM of importedBMs) {
-        const existingBM = existingLineMap.get(importedBM.line);
-        if (!existingBM) continue;
-
-        // 同じラベル・アイコンなら実質コンフリクトなし（スキップ）
-        if (existingBM.label === importedBM.label &&
-            existingBM.iconType === importedBM.iconType) continue;
-
-        const fileName = filePath.split('/').pop() ?? filePath;
-        const existingLabel  = existingBM.label  || '(no label)';
-        const importedLabel  = importedBM.label  || '(no label)';
-        const existingIcon   = existingBM.iconType  ? `[${existingBM.iconType}]`  : '';
-        const importedIcon   = importedBM.iconType  ? `[${importedBM.iconType}]`  : '';
-
-        conflictItems.push({
-          label:       `$(warning) ${fileName}  line ${importedBM.line + 1}`,
-          description: `existing: ${existingIcon}${existingLabel}  →  import: ${importedIcon}${importedLabel}`,
-          detail:      filePath,
-          picked:      false,   // デフォルトはチェックなし（既存を保持）
-          filePath,
-          line: importedBM.line,
-        });
-      }
-    }
-
-    // ── コンフリクトがある場合: QuickPick で選択 ─────────────────────
-    // どの行をインポート側で上書きするかを Set で管理
-    const overwriteKeys = new Set<string>(); // `${filePath}:${line}`
-
-    if (conflictItems.length > 0) {
-      const selected = await vscode.window.showQuickPick(conflictItems, {
-        canPickMany: true,
-        title: `Import Bookmarks — ${conflictItems.length} conflict(s) found`,
-        placeHolder: 'Check items to overwrite with imported version (unchecked = keep existing)',
-      });
-
-      // キャンセルされたら中断
-      if (selected === undefined) return;
-
-      for (const item of selected) {
-        overwriteKeys.add(`${item.filePath}:${item.line}`);
-      }
-    }
-
-    // ── マージ実行 ────────────────────────────────────────────────────
-    const mergedBookmarks: BookmarksData = { ...existing };
-
-    for (const [filePath, importedBMs] of Object.entries(importData.bookmarks as BookmarksData)) {
-      if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
-      if (!mergedBookmarks[filePath]) {
-        // 既存にないファイル: インポートをそのまま追加
-        mergedBookmarks[filePath] = importedBMs;
-      } else {
-        const existingLines = new Set(mergedBookmarks[filePath].map(bm => bm.line));
-        for (const importedBM of importedBMs) {
-          const key = `${filePath}:${importedBM.line}`;
-          if (!existingLines.has(importedBM.line)) {
-            // 行番号が被らない → 追加
-            mergedBookmarks[filePath].push(importedBM);
-          } else if (overwriteKeys.has(key)) {
-            // コンフリクトかつユーザーが上書きを選択 → 既存を置き換え
-            mergedBookmarks[filePath] = mergedBookmarks[filePath].map(bm =>
-              bm.line === importedBM.line ? importedBM : bm
-            );
-          }
-          // それ以外（コンフリクトで既存保持を選択）→ 何もしない
-        }
-      }
-    }
-
-    // fileOrder: 既存順を維持しつつ新規ファイルを末尾に追加
-    const mergedFileOrder = [...existingMeta.fileOrder];
-    ((importData.bookmarksMeta as BookmarksMeta).fileOrder || []).forEach((f: string) => {
-      if (!mergedFileOrder.includes(f)) mergedFileOrder.push(f);
-    });
-
-    // bookmarkSortType: 既存優先（新規ファイル分のみ追加）
-    const mergedSortType = {
-      ...(importData.bookmarksMeta as BookmarksMeta).bookmarkSortType,
-      ...existingMeta.bookmarkSortType,
-    };
-
-    const mergedMeta: BookmarksMeta = {
-      fileOrder: mergedFileOrder,
-      bookmarkSortType: mergedSortType,
-      globalSortType: existingMeta.globalSortType ??
-        (importData.bookmarksMeta as BookmarksMeta).globalSortType,
-    };
-
-    saveBookmarks(mergedBookmarks);
-    provider.saveBookmarksMeta(mergedMeta);
+    saveBookmarks(importedBookmarks);
+    provider.saveBookmarksMeta(importedMeta);
+    showInfo('Core Anchor: Bookmarks replaced with imported data');
+    return;
   }
 
-  provider.refresh();
+  // ── Merge ────────────────────────────────────────────────────────────
+  // 1. コンフリクト（同ファイル＋同行番号）を検出
+  // 2. コンフリクトがあれば QuickPick (canPickMany) でユーザーに選択させる
+  //    - チェックあり → インポート側で上書き
+  //    - チェックなし → 既存を保持（デフォルト）
+  // 3. コンフリクトなしのBMは自動でマージ
+  const existing = loadBookmarks();
+  const existingMeta = provider.loadBookmarksMeta();
+
+  // ── コンフリクト検出 ──────────────────────────────────────────────
+  interface ConflictItem extends vscode.QuickPickItem {
+    filePath: string;
+    line: number;
+  }
+  const conflictItems: ConflictItem[] = [];
+
+  for (const [filePath, importedBMs] of Object.entries(importedBookmarks)) {
+    if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
+    if (!existing[filePath]) continue;
+    const existingLineMap = new Map(existing[filePath].map(bm => [bm.line, bm]));
+    for (const importedBM of importedBMs) {
+      const existingBM = existingLineMap.get(importedBM.line);
+      if (!existingBM) continue;
+
+      // 同じラベル・アイコンなら実質コンフリクトなし（スキップ）
+      if (existingBM.label === importedBM.label &&
+          existingBM.iconType === importedBM.iconType) continue;
+
+      const fileName = filePath.split('/').pop() ?? filePath;
+      const existingLabel  = existingBM.label  || '(no label)';
+      const importedLabel  = importedBM.label  || '(no label)';
+      const existingIcon   = existingBM.iconType  ? `[${existingBM.iconType}]`  : '';
+      const importedIcon   = importedBM.iconType  ? `[${importedBM.iconType}]`  : '';
+
+      conflictItems.push({
+        label:       `$(warning) ${fileName}  line ${importedBM.line + 1}`,
+        description: `existing: ${existingIcon}${existingLabel}  →  import: ${importedIcon}${importedLabel}`,
+        detail:      filePath,
+        picked:      false,   // デフォルトはチェックなし（既存を保持）
+        filePath,
+        line: importedBM.line,
+      });
+    }
+  }
+
+  // ── コンフリクトがある場合: QuickPick で選択 ─────────────────────
+  // どの行をインポート側で上書きするかを Set で管理
+  const overwriteKeys = new Set<string>(); // `${filePath}:${line}`
+
+  if (conflictItems.length > 0) {
+    const selected = await vscode.window.showQuickPick(conflictItems, {
+      canPickMany: true,
+      title: `Import Bookmarks — ${conflictItems.length} conflict(s) found`,
+      placeHolder: 'Check items to overwrite with imported version (unchecked = keep existing)',
+    });
+
+    // キャンセルされたら中断
+    if (selected === undefined) return;
+
+    for (const item of selected) {
+      overwriteKeys.add(`${item.filePath}:${item.line}`);
+    }
+  }
+
+  // ── マージ実行 ────────────────────────────────────────────────────
+  const mergedBookmarks: BookmarksData = { ...existing };
+
+  for (const [filePath, importedBMs] of Object.entries(importedBookmarks)) {
+    if (!Array.isArray(importedBMs)) continue; // 不正なデータをスキップ
+    if (!mergedBookmarks[filePath]) {
+      // 既存にないファイル: インポートをそのまま追加
+      mergedBookmarks[filePath] = importedBMs;
+    } else {
+      const existingLines = new Set(mergedBookmarks[filePath].map(bm => bm.line));
+      for (const importedBM of importedBMs) {
+        const key = `${filePath}:${importedBM.line}`;
+        if (!existingLines.has(importedBM.line)) {
+          // 行番号が被らない → 追加
+          mergedBookmarks[filePath].push(importedBM);
+        } else if (overwriteKeys.has(key)) {
+          // コンフリクトかつユーザーが上書きを選択 → 既存を置き換え
+          mergedBookmarks[filePath] = mergedBookmarks[filePath].map(bm =>
+            bm.line === importedBM.line ? importedBM : bm
+          );
+        }
+        // それ以外（コンフリクトで既存保持を選択）→ 何もしない
+      }
+    }
+  }
+
+  // fileOrder: 既存順を維持しつつ新規ファイルを末尾に追加
+  const mergedFileOrder = [...existingMeta.fileOrder];
+  (importedMeta.fileOrder || []).forEach((f: string) => {
+    if (!mergedFileOrder.includes(f)) mergedFileOrder.push(f);
+  });
+
+  // bookmarkSortType: 既存優先（新規ファイル分のみ追加）
+  const mergedSortType = {
+    ...importedMeta.bookmarkSortType,
+    ...existingMeta.bookmarkSortType,
+  };
+
+  const mergedMeta: BookmarksMeta = {
+    fileOrder: mergedFileOrder,
+    bookmarkSortType: mergedSortType,
+    globalSortType: existingMeta.globalSortType ?? importedMeta.globalSortType,
+  };
+
+  saveBookmarks(mergedBookmarks);
+  provider.saveBookmarksMeta(mergedMeta);
   showInfo('Core Anchor: Bookmarks imported successfully');
+}
+
+// 🆕 Favoritesのインポート処理（マージ/置き換え）
+// Favoritesはpathをキーにした単純なマップなので、コンフリクトは「既存優先でスキップ」という
+// シンプルな方針にしている（Bookmarksのような行単位の詳細な競合解決UIは設けていない）。
+// 仮想フォルダは「同名・同階層のフォルダがあれば再利用、無ければ新規作成してID振り直し」で
+// エクスポート元とインポート先でフォルダIDがズレていても正しくマージされるようにする。
+async function importFavoritesData(
+  provider: CoreAnchorProvider,
+  importedFavorites: { [key: string]: FavoriteFile },
+  importedMeta: FavoritesMeta
+): Promise<void> {
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: '$(merge) Merge',
+        description: 'Add favorites/folders from import that do not exist locally (existing takes priority)',
+        value: 'merge',
+      },
+      {
+        label: '$(replace-all) Replace',
+        description: 'Replace all existing favorites with imported data',
+        value: 'replace',
+      },
+    ],
+    {
+      title: 'Import Favorites',
+      placeHolder: 'How would you like to import favorites?',
+    }
+  );
+
+  if (!choice) return;
+
+  if (choice.value === 'replace') {
+    provider.saveFavorites(importedFavorites || {});
+    provider.saveFavoritesMeta(importedMeta || { folderOrder: [], fileOrder: {}, virtualFolders: [] });
+    showInfo('Core Anchor: Favorites replaced with imported data');
+    return;
+  }
+
+  // ── Merge ────────────────────────────────────────────────────────────
+  const existingFavorites = provider.loadFavorites();
+  const existingMeta = provider.loadFavoritesMeta();
+  const existingFolders = existingMeta.virtualFolders || [];
+  const importedFolders = (importedMeta && importedMeta.virtualFolders) || [];
+
+  // 仮想フォルダをマージ: 同名・同階層のフォルダは既存を再利用し、無ければ新規作成してIDを振り直す
+  // 親フォルダを子より先に処理するため、階層の浅い順に並べ替える
+  const depthOf = (folder: VirtualFolder): number => {
+    let depth = 0;
+    let current: VirtualFolder | undefined = folder;
+    const seen = new Set<string>();
+    while (current && current.parentId && !seen.has(current.id)) {
+      seen.add(current.id);
+      current = importedFolders.find(f => f.id === current!.parentId);
+      depth++;
+    }
+    return depth;
+  };
+  const sortedImportedFolders = [...importedFolders].sort((a, b) => depthOf(a) - depthOf(b));
+
+  const idMap = new Map<string, string | null>(); // インポート元ID -> インポート先ID
+  const mergedFolders: VirtualFolder[] = [...existingFolders];
+  let nextOrder = mergedFolders.length;
+
+  sortedImportedFolders.forEach(folder => {
+    const resolvedParentId = folder.parentId ? (idMap.get(folder.parentId) ?? null) : null;
+    const existingMatch = mergedFolders.find(f =>
+      f.name === folder.name && (f.parentId ?? null) === resolvedParentId
+    );
+    if (existingMatch) {
+      idMap.set(folder.id, existingMatch.id);
+    } else {
+      const newId = generateVirtualFolderId(); // 🔧 FIX: security.tsの共通関数に統一
+      mergedFolders.push({
+        id: newId,
+        name: folder.name,
+        order: nextOrder++,
+        color: folder.color,
+        parentId: resolvedParentId,
+      });
+      idMap.set(folder.id, newId);
+    }
+  });
+
+  // Favoritesをマージ（既存優先。存在しないpathのみ追加。virtualFolderIdはidMapで付け替え）
+  const mergedFavorites: { [key: string]: FavoriteFile } = { ...existingFavorites };
+  let addedCount = 0;
+  Object.entries(importedFavorites || {}).forEach(([filePath, data]) => {
+    if (mergedFavorites[filePath]) return; // 既存優先でスキップ
+    const remappedFolderId = data.virtualFolderId ? (idMap.get(data.virtualFolderId) ?? null) : null;
+    mergedFavorites[filePath] = { ...data, virtualFolderId: remappedFolderId };
+    addedCount++;
+  });
+
+  const mergedMeta: FavoritesMeta = {
+    folderOrder: existingMeta.folderOrder,
+    fileOrder: existingMeta.fileOrder,
+    virtualFolders: mergedFolders,
+  };
+
+  provider.saveFavorites(mergedFavorites);
+  provider.saveFavoritesMeta(mergedMeta);
+  showInfo(`Core Anchor: Imported ${addedCount} new favorite(s)`);
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -510,13 +728,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('core-anchor.exportBookmarks', async () => {
-      await exportBookmarks(provider);
+      await exportCoreAnchorData(provider);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('core-anchor.importBookmarks', async () => {
-      await importBookmarks(provider);
+      await importCoreAnchorData(provider);
     })
   );
 

@@ -7,20 +7,20 @@
 </head>
 <body>
   <div class="section" id="favoritesSection">
-    <div class="section-header" onclick="toggleSection('favorites')">
+    <div class="section-header" id="favoritesSectionHeader">
       <div class="section-title-wrapper">
         <span class="section-collapse-icon" id="favoritesCollapseIcon">▼</span>
         <span class="section-title">Favorite Files</span>
       </div>
       <div style="display: flex; gap: 4px; align-items: center;">
         <div class="mode-switch">
-          <button class="mode-btn" id="globalModeBtn" onclick="switchFavoriteMode('global'); event.stopPropagation();" title="Global favorites">
+          <button class="mode-btn" id="globalModeBtn" title="Global favorites">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/>
               <path d="M2 8H14M8 2C6.5 4 6.5 12 8 14M8 2C9.5 4 9.5 12 8 14" stroke="currentColor" stroke-width="1.5"/>
             </svg>
           </button>
-          <button class="mode-btn" id="localModeBtn" onclick="switchFavoriteMode('local'); event.stopPropagation();" title="Local favorites">
+          <button class="mode-btn" id="localModeBtn" title="Local favorites">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M1 3H6L7.5 5H15V13H1V3Z" stroke="currentColor" stroke-width="1.5"/>
               <circle cx="8" cy="9" r="2" stroke="currentColor" stroke-width="1.5"/>
@@ -31,25 +31,35 @@
     </div>
     <div class="section-content" id="favoritesContent">
       <div class="search-container">
-        <input type="text" id="favoriteSearch" class="search-input" placeholder="Search favorites..." oninput="filterFavorites()" />
+        <input type="text" id="favoriteSearch" class="search-input" placeholder="Search favorites..." />
       </div>
       <div class="debug-info" id="favoriteDebug">Waiting...</div>
+
+      <!-- 🆕 複数選択時の一括操作バー（Shift+クリックで複数選択） -->
+      <div class="bulk-action-bar" id="favoritesBulkBar" style="display:none;">
+        <span class="bulk-action-count" id="favoritesBulkCount"></span>
+        <div class="bulk-action-buttons">
+          <button class="bulk-action-btn" id="favoritesBulkMoveBtn" title="Move to Folder">Move</button>
+          <button class="bulk-action-btn bulk-action-btn-danger" id="favoritesBulkDeleteBtn">Delete</button>
+          <button class="bulk-action-btn" id="favoritesBulkCancelBtn">Cancel</button>
+        </div>
+      </div>
       
       
       <!-- Virtual Folders & Files Display -->
       <div id="favorites"></div>
       
       <div class="add-btn-container">
-        <button class="toggle-add-btn quick-add-btn" onclick="addFileWithContext()">+ Add File</button>
-        <button class="toggle-add-btn outline-btn" onclick="toggleVirtualFolderForm()"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 4px;"><path d="M1.5 3H6.5L8 5H14.5V13H1.5V3Z" stroke="currentColor" stroke-width="1.5"/></svg>New Folder</button>
+        <button class="toggle-add-btn quick-add-btn" id="addFileBtn">+ Add File</button>
+        <button class="toggle-add-btn outline-btn" id="newVirtualFolderBtn"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle; margin-right: 4px;"><path d="M1.5 3H6.5L8 5H14.5V13H1.5V3Z" stroke="currentColor" stroke-width="1.5"/></svg>New Folder</button>
       </div>
       
       <!-- Virtual Folder Form -->
       <div class="add-form" id="virtualFolderForm">
         <input type="text" id="virtualFolderName" placeholder="Folder name" />
         <div class="edit-form-buttons">
-          <button class="save-btn" onclick="createVirtualFolder()">Create</button>
-          <button class="cancel-btn" onclick="cancelVirtualFolderForm()">Cancel</button>
+          <button class="save-btn" id="createVirtualFolderBtn">Create</button>
+          <button class="cancel-btn" id="cancelVirtualFolderBtn">Cancel</button>
         </div>
       </div>
       
@@ -63,7 +73,7 @@
           </label>
         </div>
         <div class="custom-select" id="virtualFolderSelect">
-          <div class="custom-select-trigger" onclick="toggleVirtualFolderSelect()">
+          <div class="custom-select-trigger" id="virtualFolderSelectTrigger">
             <div class="custom-select-value">
               <span id="virtualFolderSelectText">Uncategorized</span>
             </div>
@@ -72,8 +82,8 @@
           <div class="custom-select-options" id="virtualFolderSelectOptions"></div>
         </div>
         <div class="edit-form-buttons">
-          <button class="save-btn" onclick="addFavorite()">Add</button>
-          <button class="cancel-btn" onclick="cancelAddFavorite()">Cancel</button>
+          <button class="save-btn" id="addFavoriteBtn">Add</button>
+          <button class="cancel-btn" id="cancelAddFavoriteBtn">Cancel</button>
         </div>
       </div>
     </div>
@@ -82,24 +92,34 @@
   <div class="separator"></div>
   
   <div class="section" id="bookmarksSection">
-    <div class="section-header" onclick="toggleSection('bookmarks')">
+    <div class="section-header" id="bookmarksSectionHeader">
       <div class="section-title-wrapper">
         <span class="section-collapse-icon" id="bookmarksCollapseIcon">▼</span>
         <span class="section-title">Bookmarks</span>
       </div>
-      <div style="display:flex;gap:2px;flex-shrink:0;" onclick="event.stopPropagation();">
-        <button id="globalSortBtnLine" class="sort-btn sort-btn-active" title="Sort all bookmarks by line number" onclick="setSortType('line')">Line</button>
-        <button id="globalSortBtnOrder" class="sort-btn" title="Sort all bookmarks by added order" onclick="setSortType('order')">Order</button>
+      <div style="display:flex;gap:2px;flex-shrink:0;" id="bookmarksSortButtonsWrapper">
+        <button id="globalSortBtnLine" class="sort-btn sort-btn-active" title="Sort all bookmarks by line number">Line</button>
+        <button id="globalSortBtnOrder" class="sort-btn" title="Sort all bookmarks by added order">Order</button>
       </div>
     </div>
     <div class="section-content" id="bookmarksContent">
       <div class="search-container">
-        <input type="text" id="bookmarkSearch" class="search-input" placeholder="Search bookmarks..." oninput="filterBookmarks()" />
+        <input type="text" id="bookmarkSearch" class="search-input" placeholder="Search bookmarks..." />
       </div>
       <div class="debug-info" id="bookmarkDebug">Waiting...</div>
+
+      <!-- 🆕 複数選択時の一括操作バー（Shift+クリックで複数選択） -->
+      <div class="bulk-action-bar" id="bookmarksBulkBar" style="display:none;">
+        <span class="bulk-action-count" id="bookmarksBulkCount"></span>
+        <div class="bulk-action-buttons">
+          <button class="bulk-action-btn bulk-action-btn-danger" id="bookmarksBulkDeleteBtn">Delete</button>
+          <button class="bulk-action-btn" id="bookmarksBulkCancelBtn">Cancel</button>
+        </div>
+      </div>
+
       <div class="icon-filter" style="margin-bottom:4px; display:flex; justify-content:flex-end;">
-        <div class="custom-select" id="iconFilterSelect" style="width:auto;" onclick="event.stopPropagation();">
-          <div class="custom-select-trigger" style="gap:8px;" onclick="toggleIconSelect('iconFilterSelect')">
+        <div class="custom-select" id="iconFilterSelect" style="width:auto;">
+          <div class="custom-select-trigger" id="iconFilterSelectTrigger" style="gap:8px;">
             <div class="custom-select-value">
               <img class="custom-select-icon" id="iconFilterSelectImage" src="" />
               <span id="iconFilterSelectText">All Icons</span>
@@ -111,14 +131,14 @@
       </div>
       <div id="bookmarks"></div>
       <div class="add-btn-container">
-        <button class="toggle-add-btn quick-add-btn" onclick="addBookmarkWithContext()">+ Add Bookmark</button>
+        <button class="toggle-add-btn quick-add-btn" id="addBookmarkBtn">+ Add Bookmark</button>
       </div>
       <div class="add-form" id="bookmarkForm">
         <input type="text" id="bookmarkFile" placeholder="File path" />
         <input type="text" id="bookmarkLine" placeholder="Line number" />
         <input type="text" id="bookmarkLabel" placeholder="Label" />
         <div class="custom-select" id="bookmarkIconSelect">
-          <div class="custom-select-trigger" onclick="toggleIconSelect('bookmarkIconSelect')">
+          <div class="custom-select-trigger" id="bookmarkIconSelectTrigger">
             <div class="custom-select-value">
               <img class="custom-select-icon" id="bookmarkIconSelectImage" src="" />
               <span id="bookmarkIconSelectText">Default</span>
@@ -128,8 +148,8 @@
           <div class="custom-select-options" id="bookmarkIconSelectOptions"></div>
         </div>
         <div class="edit-form-buttons">
-          <button class="save-btn" onclick="addBookmarkManual()">Add</button>
-          <button class="cancel-btn" onclick="cancelAddBookmark()">Cancel</button>
+          <button class="save-btn" id="addBookmarkManualBtn">Add</button>
+          <button class="cancel-btn" id="cancelAddBookmarkBtn">Cancel</button>
         </div>
       </div>
     </div>

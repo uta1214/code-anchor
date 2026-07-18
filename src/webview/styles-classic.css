@@ -93,6 +93,7 @@ body {
 
 .section-content {
   display: block;
+  position: relative; /* 🆕 バルクアクションバーをポップアップ表示するための基準 */
 }
 
 .icon-filter { 
@@ -811,4 +812,91 @@ body {
   border: 2px solid var(--vscode-focusBorder) !important;
   border-radius: 4px;
   box-shadow: 0 0 10px rgba(0, 123, 255, 0.3);
+}
+/* 🆕 検索ハイライト */
+mark.search-highlight {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(255, 210, 0, 0.35));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* 🆕 キーボードナビゲーションのフォーカス表示 */
+.item.kb-focused,
+.folder-header.kb-focused,
+.file-header.kb-focused {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* 🆕 複数選択（Shift+クリック）時のバルクアクションバー */
+.bulk-action-bar {
+  /* 🔧 FIX: 通常のフロー要素として挿入すると表示/非表示のたびに一覧の位置がズレる。
+     position:absoluteにすると今度は body スクロール時に画面外へ隠れてしまうため、
+     position:fixed でビューポート基準に固定し、スクロール位置に関わらず常に見える
+     ポップアップ的なバーにする。一覧側のレイアウトには一切影響しない。 */
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 8px;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  font-size: var(--font-size-button);
+}
+
+.bulk-action-count {
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bulk-action-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-size-button);
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bulk-action-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.bulk-action-btn-danger {
+  background: var(--vscode-errorForeground);
+  color: var(--vscode-button-foreground);
+}
+
+.item.multi-selected {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  border-left: 3px solid var(--vscode-charts-orange, #d18616);
+}
+
+.item.multi-selected .item-file {
+  font-weight: 600;
 }

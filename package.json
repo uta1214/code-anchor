@@ -2,7 +2,7 @@
   "name": "core-anchor",
   "displayName": "Core Anchor",
   "description": "Manage favorite files and bookmarks with a beautiful, customizable interface",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "uta-orange-1214",
   "author": {
     "name": "uta"
@@ -80,12 +80,12 @@
       },
       {
         "command": "core-anchor.exportBookmarks",
-        "title": "Core Anchor: Export Bookmarks",
+        "title": "Core Anchor: Export Data (Favorites/Bookmarks)",
         "icon": "$(export)"
       },
       {
         "command": "core-anchor.importBookmarks",
-        "title": "Core Anchor: Import Bookmarks",
+        "title": "Core Anchor: Import Data (Favorites/Bookmarks)",
         "icon": "$(import)"
       }
     ],

@@ -18,3 +18,5 @@ tasks.json
 GPATH
 GRTAGS
 GTAGS
+
+*.diff

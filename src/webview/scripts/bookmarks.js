@@ -9,6 +9,9 @@ let highlightedBookmark = null; // { filePath, line } - ハイライト中のブ
 let bookmarksDefaultExpandState = 'collapsed'; // 初期開閉状態
 let globalBookmarkSortType = 'line'; // グローバルソートタイプ
 
+// 🆕 複数選択（Shift+クリックでトグル選択）
+let bookmarksMultiSelect = new Set(); // "filePath::line" 形式のキー一覧
+
 // ブックマークのファイルヘッダー用表示名
 // 同じファイル名が他にも存在する場合は「親ディレクトリ/ファイル名」で表示
 // favorites.js の getDisplayFileName と同等のロジック
@@ -142,6 +145,58 @@ function removeBookmark(filePath, line) {
   vscode.postMessage({ command: 'removeBookmark', filePath, line }); 
 }
 
+// 🆕 Shift+クリックでのトグル選択（bookmarks）
+// クリックした項目だけを選択に追加/削除する（間の項目は含めない）。
+// 既に選択済みの項目を再度Shift+クリックすると選択解除される。
+function handleBookmarkToggleSelect(key) {
+  // 🆕 両セクションのバー(position:fixed)が同時に重ならないよう、
+  // 新たに選択を始める際は逆側(favorites)の複数選択をクリアする
+  if (bookmarksMultiSelect.size === 0 && typeof favoritesMultiSelect !== 'undefined' && favoritesMultiSelect.size > 0) {
+    clearFavoritesMultiSelect();
+  }
+
+  if (bookmarksMultiSelect.has(key)) {
+    bookmarksMultiSelect.delete(key);
+  } else {
+    bookmarksMultiSelect.add(key);
+  }
+
+  document.querySelectorAll('#bookmarks .item').forEach(el => {
+    el.classList.toggle('multi-selected', bookmarksMultiSelect.has(el.dataset.bmKey));
+  });
+
+  updateBookmarksBulkBar();
+}
+
+function updateBookmarksBulkBar() {
+  const bar = document.getElementById('bookmarksBulkBar');
+  const countEl = document.getElementById('bookmarksBulkCount');
+  if (!bar || !countEl) return;
+
+  if (bookmarksMultiSelect.size > 0) {
+    bar.style.display = 'flex';
+    countEl.textContent = bookmarksMultiSelect.size + ' selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function clearBookmarksMultiSelect() {
+  bookmarksMultiSelect = new Set();
+  document.querySelectorAll('#bookmarks .item.multi-selected').forEach(el => el.classList.remove('multi-selected'));
+  updateBookmarksBulkBar();
+}
+
+function bulkDeleteBookmarks() {
+  if (bookmarksMultiSelect.size === 0) return;
+  const items = Array.from(bookmarksMultiSelect).map(key => {
+    const idx = key.lastIndexOf('::');
+    return { filePath: key.slice(0, idx), line: parseInt(key.slice(idx + 2), 10) };
+  });
+  vscode.postMessage({ command: 'bulkRemoveBookmarks', items });
+  clearBookmarksMultiSelect();
+}
+
 function jumpToBookmark(filePath, line) {
   // ハイライトを設定（バックエンドからの通知を待たずに先行設定）
   highlightedBookmark = { filePath, line };
@@ -236,6 +291,7 @@ function updateBookmarks(bookmarks) {
   debug.textContent = entries.length + ' files, ' + total + ' bookmarks';
   if (entries.length === 0) {
     container.innerHTML = '<div class="empty-text">No bookmarks</div>';
+    clearBookmarksMultiSelect();
     return;
   }
   
@@ -268,6 +324,7 @@ function updateBookmarks(bookmarks) {
 
     const headerDiv = document.createElement('div');
     headerDiv.className = 'file-header';
+    headerDiv.dataset.kbKey = 'file:' + filePath; // 🆕 再描画後のキーボードフォーカス復元に使用
     headerDiv.onclick = () => toggleFileGroup(fileId);
     headerDiv.oncontextmenu = (e) => showContextMenu(e, [
       { label: 'Delete All Bookmarks', action: () => vscode.postMessage({ command: 'deleteAllBookmarks', filePath }) },
@@ -314,6 +371,9 @@ function updateBookmarks(bookmarks) {
     marks.forEach(mark => {
       const bmId = safeId(filePath + mark.line);
       const labelEsc = escapeHtml(mark.label);
+      // 🆕 検索中はマッチ部分をハイライト表示する（編集フォームのvalue属性には使わない）
+      const bmSearchText = (document.getElementById('bookmarkSearch')?.value || '').trim();
+      const labelDisplay = highlightMatch(mark.label, bmSearchText);
       const iconType = mark.iconType || 'default';
       const iconLabel = ICON_LABELS[iconType] || 'Default';
       const selectId = 'editIconSelect-' + bmId;
@@ -325,6 +385,13 @@ function updateBookmarks(bookmarks) {
       
       const itemDiv = document.createElement('div');
       itemDiv.className = 'item';
+      itemDiv.dataset.bmKey = filePath + '::' + mark.line; // 🆕 複数選択の範囲特定に使用
+      itemDiv.dataset.kbKey = 'bmitem:' + itemDiv.dataset.bmKey; // 🆕 再描画後のキーボードフォーカス復元に使用
+
+      // 🆕 再描画後も複数選択状態を復元
+      if (bookmarksMultiSelect.has(itemDiv.dataset.bmKey)) {
+        itemDiv.classList.add('multi-selected');
+      }
       
       // ハイライト判定
       if (highlightedBookmark && highlightedBookmark.filePath === filePath && highlightedBookmark.line === mark.line) {
@@ -340,7 +407,7 @@ function updateBookmarks(bookmarks) {
       
       const itemDesc = document.createElement('div');
       itemDesc.className = 'item-desc';
-      itemDesc.innerHTML = '<img src="' + iconSrc + '" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;" /> ' + labelEsc;
+      itemDesc.innerHTML = '<img src="' + iconSrc + '" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;" /> ' + labelDisplay;
       
       const itemLine = document.createElement('div');
       itemLine.className = 'item-line';
@@ -381,6 +448,18 @@ function updateBookmarks(bookmarks) {
       // 編集・削除ボタン（.item-buttons）上のクリックはジャンプさせない。
       itemDiv.addEventListener('click', (e) => {
         if (e.target.closest('.item-buttons')) return;
+
+        // 🆕 Shift+クリック: トグル選択（複数選択）。ジャンプはしない。
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleBookmarkToggleSelect(itemDiv.dataset.bmKey);
+          return;
+        }
+
+        if (bookmarksMultiSelect.size > 0) {
+          clearBookmarksMultiSelect();
+        }
+
         jumpToBookmark(filePath, mark.line);
       });
       
@@ -388,7 +467,7 @@ function updateBookmarks(bookmarks) {
       editForm.id = 'edit-bm-' + bmId;
       editForm.className = 'edit-form';
       editForm.innerHTML = `
-        <input type="text" class="edit-line" placeholder="Line number" value="${mark.line + 1}" />
+        <input type="text" class="edit-line" placeholder="Line number" value="${escapeHtml(String(mark.line + 1))}" />
         <input type="text" class="edit-label" placeholder="Label" value="${labelEsc}" />
         <div class="custom-select" id="${selectId}">
           <div class="custom-select-trigger">
@@ -437,6 +516,18 @@ function updateBookmarks(bookmarks) {
     attachBmDragEvents(fileDiv, filePath);
     container.appendChild(fileDiv);
   });
+
+  // 🆕 データが変わって存在しなくなったキーを複数選択から取り除いてからバーを同期
+  if (bookmarksMultiSelect.size > 0) {
+    const existingKeys = new Set();
+    entries.forEach(([filePath, marks]) => {
+      marks.forEach(m => existingKeys.add(filePath + '::' + m.line));
+    });
+    bookmarksMultiSelect = new Set(Array.from(bookmarksMultiSelect).filter(k => existingKeys.has(k)));
+  }
+  updateBookmarksBulkBar();
+  // 🆕 再描画完了後にキーボードフォーカス位置を復元
+  if (typeof restoreKbFocus === 'function') restoreKbFocus();
 }
 // ─── ブックマークファイル並び替え (ドラッグ＆ドロップ) ─────────────────────
 

@@ -8,6 +8,7 @@ let currentFavoriteMode = 'global';
 let favoritesMeta = { folderOrder: [], fileOrder: {} };
 let bookmarksMeta = { fileOrder: [], bookmarkSortType: {} };
 let sectionCollapsed = { favorites: false, bookmarks: false };
+let kbFocusedKey = null; // 🆕 再描画後もキーボードフォーカス位置を復元するための識別子
 let fileIcons = {}; // グローバル変数として宣言
 let settings = { defaultPathType: 'relative', showBookmarkTooltip: true }; // 設定値
 const ICON_LABELS = {
@@ -101,8 +102,61 @@ function updateSectionVisibility(showFavorites, showBookmarks) {
   }
 }
 
+// 🆕 サイドバー内のキーボードナビゲーション用ヘルパー
+function isTypingContext(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+}
+
+function isVisibleItem(el) {
+  return el.offsetParent !== null;
+}
+
 // キーボードイベントハンドラ（新規追加）
 window.addEventListener('keydown', (e) => {
+  // 🆕 矢印キー: サイドバー内でフォーカス移動（検索欄・フォーム入力中は無視）
+  // 🔧 フォルダ／ファイルグループのヘッダーもナビゲーション対象に含める
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (isTypingContext(e.target)) return;
+    if (document.querySelector('.add-form.active, .edit-form.active')) return;
+
+    const items = Array.from(document.querySelectorAll('.item, .folder-header, .file-header')).filter(isVisibleItem);
+    if (items.length === 0) return;
+
+    e.preventDefault();
+
+    // クラスが（再描画等で）失われていても kbFocusedKey から現在位置を復元できるようにする
+    let currentIndex = items.findIndex(el => el.classList.contains('kb-focused'));
+    if (currentIndex === -1 && kbFocusedKey) {
+      currentIndex = items.findIndex(el => el.dataset.kbKey === kbFocusedKey);
+    }
+    let nextIndex;
+    if (e.key === 'ArrowDown') {
+      nextIndex = currentIndex === -1 ? 0 : Math.min(currentIndex + 1, items.length - 1);
+    } else {
+      nextIndex = currentIndex === -1 ? items.length - 1 : Math.max(currentIndex - 1, 0);
+    }
+
+    items.forEach(el => el.classList.remove('kb-focused'));
+    items[nextIndex].classList.add('kb-focused');
+    kbFocusedKey = items[nextIndex].dataset.kbKey || null;
+    items[nextIndex].scrollIntoView({ block: 'nearest' });
+    return;
+  }
+
+  // 🆕 Enter: フォーカス中の項目を実行する。
+  // .item ならファイルを開く／ブックマークへジャンプ、.folder-header/.file-header なら開閉トグル
+  // （それぞれの要素に既についているクリックハンドラをそのまま呼ぶだけでよい）
+  if (e.key === 'Enter') {
+    const focused = document.querySelector('.item.kb-focused, .folder-header.kb-focused, .file-header.kb-focused');
+    if (focused && !isTypingContext(e.target) && !document.querySelector('.add-form.active, .edit-form.active')) {
+      e.preventDefault();
+      focused.click();
+      return;
+    }
+  }
+
   // Delete: 削除
   if (e.key === 'Delete') {
     e.preventDefault();
@@ -147,7 +201,19 @@ function handleEscapeKey(e) {
     e.preventDefault();
     return;
   }
-  
+
+  // 🆕 複数選択中（Shift+クリック）の場合、Escapeで選択解除する
+  if (typeof favoritesMultiSelect !== 'undefined' && favoritesMultiSelect.size > 0) {
+    clearFavoritesMultiSelect();
+    e.preventDefault();
+    return;
+  }
+  if (typeof bookmarksMultiSelect !== 'undefined' && bookmarksMultiSelect.size > 0) {
+    clearBookmarksMultiSelect();
+    e.preventDefault();
+    return;
+  }
+
   // 追加フォーム（新規作成）にフォーカスがある場合のみ、ui.jsに任せる
   // 編集フォーム（.edit-form）の場合は、このまま下の処理で閉じる
   const favoriteForm = document.getElementById('favoriteForm');
@@ -233,9 +299,74 @@ function handleEscapeKey(e) {
   }
 }
 
+// 🆕 マウスでクリックした項目にキーボードカーソルも移動させる（矢印キー操作との継続性のため）
+document.addEventListener('click', (e) => {
+  const item = e.target.closest('.item, .folder-header, .file-header');
+  if (item) {
+    document.querySelectorAll('.kb-focused').forEach(el => el.classList.remove('kb-focused'));
+    item.classList.add('kb-focused');
+    kbFocusedKey = item.dataset.kbKey || null;
+  }
+});
+
+// 🆕 データ再描画後もキーボードフォーカス位置を復元する。
+// favorites.js / bookmarks.js の updateFavorites / updateBookmarks の末尾から呼ばれる。
+function restoreKbFocus() {
+  if (!kbFocusedKey) return;
+  document.querySelectorAll('.kb-focused').forEach(el => el.classList.remove('kb-focused'));
+  const target = document.querySelector('[data-kb-key="' + CSS.escape(kbFocusedKey) + '"]');
+  if (target) {
+    target.classList.add('kb-focused');
+  }
+}
+window.restoreKbFocus = restoreKbFocus;
+
+// 🔧 FIX(CSP): template.html の onclick/oninput 属性は Content-Security-Policy の
+// 'script-src nonce-...' 設定下ではインラインイベントハンドラとして扱われ実行がブロックされる。
+// そのため全てここで addEventListener により配線する。
+function initStaticEventListeners() {
+  // ── Favorites セクション ──
+  document.getElementById('favoritesSectionHeader')?.addEventListener('click', () => toggleSection('favorites'));
+  document.getElementById('globalModeBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    switchFavoriteMode('global');
+  });
+  document.getElementById('localModeBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    switchFavoriteMode('local');
+  });
+  document.getElementById('favoriteSearch')?.addEventListener('input', () => filterFavorites());
+  document.getElementById('favoritesBulkMoveBtn')?.addEventListener('click', () => bulkMoveFavoritesToFolder());
+  document.getElementById('favoritesBulkDeleteBtn')?.addEventListener('click', () => bulkDeleteFavorites());
+  document.getElementById('favoritesBulkCancelBtn')?.addEventListener('click', () => clearFavoritesMultiSelect());
+  document.getElementById('addFileBtn')?.addEventListener('click', () => addFileWithContext());
+  document.getElementById('newVirtualFolderBtn')?.addEventListener('click', () => toggleVirtualFolderForm());
+  document.getElementById('createVirtualFolderBtn')?.addEventListener('click', () => createVirtualFolder());
+  document.getElementById('cancelVirtualFolderBtn')?.addEventListener('click', () => cancelVirtualFolderForm());
+  document.getElementById('virtualFolderSelectTrigger')?.addEventListener('click', () => toggleVirtualFolderSelect());
+  document.getElementById('addFavoriteBtn')?.addEventListener('click', () => addFavorite());
+  document.getElementById('cancelAddFavoriteBtn')?.addEventListener('click', () => cancelAddFavorite());
+
+  // ── Bookmarks セクション ──
+  document.getElementById('bookmarksSectionHeader')?.addEventListener('click', () => toggleSection('bookmarks'));
+  document.getElementById('bookmarksSortButtonsWrapper')?.addEventListener('click', (e) => e.stopPropagation());
+  document.getElementById('globalSortBtnLine')?.addEventListener('click', () => setSortType('line'));
+  document.getElementById('globalSortBtnOrder')?.addEventListener('click', () => setSortType('order'));
+  document.getElementById('bookmarkSearch')?.addEventListener('input', () => filterBookmarks());
+  document.getElementById('bookmarksBulkDeleteBtn')?.addEventListener('click', () => bulkDeleteBookmarks());
+  document.getElementById('bookmarksBulkCancelBtn')?.addEventListener('click', () => clearBookmarksMultiSelect());
+  document.getElementById('iconFilterSelect')?.addEventListener('click', (e) => e.stopPropagation());
+  document.getElementById('iconFilterSelectTrigger')?.addEventListener('click', () => toggleIconSelect('iconFilterSelect'));
+  document.getElementById('addBookmarkBtn')?.addEventListener('click', () => addBookmarkWithContext());
+  document.getElementById('bookmarkIconSelectTrigger')?.addEventListener('click', () => toggleIconSelect('bookmarkIconSelect'));
+  document.getElementById('addBookmarkManualBtn')?.addEventListener('click', () => addBookmarkManual());
+  document.getElementById('cancelAddBookmarkBtn')?.addEventListener('click', () => cancelAddBookmark());
+}
+
 // ページ読み込み完了後にバックエンドへ準備完了を通知する。
 // 'load' イベントのみ使用し、'DOMContentLoaded' との二重送信を防ぐ。
 window.addEventListener('load', () => { 
+  initStaticEventListeners();
   loadState(); 
   vscode.postMessage({ command: 'ready' }); 
 });

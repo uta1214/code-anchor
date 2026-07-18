@@ -36,3 +36,5 @@ other/
 GPATH
 GRTAGS
 GTAGS
+
+*.diff

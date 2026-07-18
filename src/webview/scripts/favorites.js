@@ -6,6 +6,7 @@ let virtualFolders = [];
 let selectedVirtualFolderId = null;
 let draggedFile = null;
 let draggedFromFolderId = null;   // ファイル用: 元のフォルダID
+let draggedMultiPaths = null;     // 🆕 複数選択したファイルをまとめてドラッグする場合のpath配列
 let draggedFolder = null;
 let draggedFolderParentId = null; // フォルダ用: ドラッグ元の親ID
 let currentDragMode = null; // 'before' | 'after' | 'into'
@@ -20,6 +21,9 @@ let currentColorPickerFolderId = null; // カラーピッカーのトグル用
 let selectedItemPath = null;  // F2キー用
 let selectedFolderId = null;   // F2キー用
 let favoritesDefaultExpandState = 'collapsed'; // 初期開閉状態
+
+// 🆕 複数選択（Shift+クリックでトグル選択）
+let favoritesMultiSelect = new Set(); // 選択中のpath一覧
 
 // 🔧 FIX: トグル機能のための変数
 let currentAddFilePopupFolderId = null;
@@ -221,6 +225,60 @@ function removeFavorite(path) {
   vscode.postMessage({ command: 'removeFavorite', path }); 
 }
 
+// 🆕 Shift+クリックでのトグル選択（favorites）
+// クリックした項目だけを選択に追加/削除する（間の項目は含めない）。
+// 既に選択済みの項目を再度Shift+クリックすると選択解除される。
+function handleFavoriteToggleSelect(path) {
+  // 🆕 両セクションのバー(position:fixed)が同時に重ならないよう、
+  // 新たに選択を始める際は逆側(bookmarks)の複数選択をクリアする
+  if (favoritesMultiSelect.size === 0 && typeof bookmarksMultiSelect !== 'undefined' && bookmarksMultiSelect.size > 0) {
+    clearBookmarksMultiSelect();
+  }
+
+  if (favoritesMultiSelect.has(path)) {
+    favoritesMultiSelect.delete(path);
+  } else {
+    favoritesMultiSelect.add(path);
+  }
+
+  document.querySelectorAll('#favorites .item').forEach(el => {
+    el.classList.toggle('multi-selected', favoritesMultiSelect.has(el.dataset.favPath));
+  });
+
+  updateFavoritesBulkBar();
+}
+
+function updateFavoritesBulkBar() {
+  const bar = document.getElementById('favoritesBulkBar');
+  const countEl = document.getElementById('favoritesBulkCount');
+  if (!bar || !countEl) return;
+
+  if (favoritesMultiSelect.size > 0) {
+    bar.style.display = 'flex';
+    countEl.textContent = favoritesMultiSelect.size + ' selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function clearFavoritesMultiSelect() {
+  favoritesMultiSelect = new Set();
+  document.querySelectorAll('#favorites .item.multi-selected').forEach(el => el.classList.remove('multi-selected'));
+  updateFavoritesBulkBar();
+}
+
+function bulkDeleteFavorites() {
+  if (favoritesMultiSelect.size === 0) return;
+  vscode.postMessage({ command: 'bulkRemoveFavorites', paths: Array.from(favoritesMultiSelect) });
+  clearFavoritesMultiSelect();
+}
+
+function bulkMoveFavoritesToFolder() {
+  if (favoritesMultiSelect.size === 0) return;
+  vscode.postMessage({ command: 'bulkMoveFavoritesToFolder', paths: Array.from(favoritesMultiSelect) });
+  clearFavoritesMultiSelect();
+}
+
 function openFile(path, openToSide = false) { 
   vscode.postMessage({ 
     command: 'openFile', 
@@ -280,6 +338,7 @@ function updateFavorites(favorites) {
   if (!favorites) {
     debug.textContent = 'ERROR';
     container.innerHTML = '<div class="empty-text">Error</div>';
+    clearFavoritesMultiSelect();
     return;
   }
   
@@ -336,6 +395,15 @@ function updateFavorites(favorites) {
   if (entries.length === 0 && virtualFolders.length === 0) {
     container.innerHTML = '<div class="empty-text">No favorites yet.<br><br>Click "+ New Virtual Folder" to organize your files,<br>or "+ Add File" to get started.</div>';
   }
+
+  // 🆕 データが変わって存在しなくなったpathを複数選択から取り除いてからバーを同期
+  if (favoritesMultiSelect.size > 0) {
+    const existingPaths = new Set(entries.map(([p]) => p));
+    favoritesMultiSelect = new Set(Array.from(favoritesMultiSelect).filter(p => existingPaths.has(p)));
+  }
+  updateFavoritesBulkBar();
+  // 🆕 再描画完了後にキーボードフォーカス位置を復元
+  if (typeof restoreKbFocus === 'function') restoreKbFocus();
 }
 
 function renderVirtualFolder(folder, files, container, depth = 0, allFolderFiles = {}, visited = new Set()) {
@@ -361,6 +429,7 @@ function renderVirtualFolder(folder, files, container, depth = 0, allFolderFiles
   
   const headerDiv = document.createElement('div');
   headerDiv.className = 'folder-header';
+  headerDiv.dataset.kbKey = 'folder:' + folder.id; // 🆕 再描画後のキーボードフォーカス復元に使用
   
   const isEditing = editingFolderId === folder.id;
   
@@ -961,6 +1030,7 @@ function renderRootFiles(files, container) {
   
   const headerDiv = document.createElement('div');
   headerDiv.className = 'folder-header';
+  headerDiv.dataset.kbKey = 'folder:uncategorized'; // 🆕 再描画後のキーボードフォーカス復元に使用
   
   const iconSpan = document.createElement('span');
   iconSpan.id = 'icon-' + folderId;
@@ -1025,6 +1095,13 @@ function renderFavoriteFile(path, data, container, folderId) {
   const itemDiv = document.createElement('div');
   itemDiv.className = 'item';
   itemDiv.draggable = true;
+  itemDiv.dataset.favPath = path; // 🆕 複数選択の範囲特定に使用
+  itemDiv.dataset.kbKey = 'favitem:' + path; // 🆕 再描画後のキーボードフォーカス復元に使用
+
+  // 🆕 再描画後も複数選択状態を復元
+  if (favoritesMultiSelect.has(path)) {
+    itemDiv.classList.add('multi-selected');
+  }
   
   itemDiv.addEventListener('dragstart', (e) => handleFileDragStart(e, path, folderId));
   itemDiv.addEventListener('dragend', handleFileDragEnd);
@@ -1044,9 +1121,14 @@ function renderFavoriteFile(path, data, container, folderId) {
   // 🔧 FIX: ファイルを開く処理は hover の光る範囲（.item 全体）と一致させるため、
   // 下記の itemDiv 全体へのクリックリスナーに統合した（Ctrl/Cmd+クリックで横に開くのは維持）。
   
+  // 🆕 検索中はマッチ部分をハイライト表示する
+  const favSearchText = (document.getElementById('favoriteSearch')?.value || '').trim();
+  const highlightedName = highlightMatch(fileName, favSearchText);
+  const highlightedDesc = data.description ? highlightMatch(data.description, favSearchText) : '';
+
   contentDiv.innerHTML = `
-    <div class="item-file">${fileIconHtml}${escapeHtml(fileName)}</div>
-    ${data.description ? '<div class="item-desc">' + escapeHtml(data.description) + '</div>' : ''}
+    <div class="item-file">${fileIconHtml}${highlightedName}</div>
+    ${highlightedDesc ? '<div class="item-desc">' + highlightedDesc + '</div>' : ''}
   `;
   
   const buttonsDiv = document.createElement('div');
@@ -1068,7 +1150,23 @@ function renderFavoriteFile(path, data, container, folderId) {
   // 編集・削除ボタン（.item-buttons）上のクリックは無視する。
   itemDiv.addEventListener('click', (e) => {
     if (e.target.closest('.item-buttons')) return;
-    if (e.detail === 1) {
+
+    // 🆕 Shift+クリック: トグル選択（複数選択）。ファイルは開かない。
+    if (e.shiftKey) {
+      e.preventDefault();
+      handleFavoriteToggleSelect(path);
+      return;
+    }
+
+    // 🔧 FIX: element.click() で発火させた疑似クリックは e.detail が 0 になる。
+    // Enterキーでのキーボード操作から .click() を呼んだ際にファイルが開かなかったのはこれが原因。
+    // detail 0（疑似クリック）と 1（通常の単クリック）の両方を許可する。
+    if (e.detail <= 1) {
+      // 通常クリックは複数選択を解除してから通常の単一選択・オープン動作を行う
+      if (favoritesMultiSelect.size > 0) {
+        clearFavoritesMultiSelect();
+      }
+
       const openToSide = e.ctrlKey || e.metaKey;
       openFile(path, openToSide);
 
@@ -1189,21 +1287,42 @@ function handleFileDragStart(e, filePath, fromFolderId) {
   draggedFolderParentId = null;
   draggedFromFolderId = fromFolderId;
   currentDragMode = null;
-  e.currentTarget.style.opacity = '0.5';
+
+  // 🆕 複数選択中のアイテムをドラッグした場合は、選択中の全ファイルをまとめて移動対象にする
+  if (favoritesMultiSelect.size > 1 && favoritesMultiSelect.has(filePath)) {
+    draggedMultiPaths = Array.from(favoritesMultiSelect);
+    // 選択中の全アイテムを半透明にして「まとめてドラッグ中」であることを示す
+    document.querySelectorAll('#favorites .item').forEach(el => {
+      if (draggedMultiPaths.includes(el.dataset.favPath)) {
+        el.style.opacity = '0.5';
+      }
+    });
+  } else {
+    draggedMultiPaths = null;
+    e.currentTarget.style.opacity = '0.5';
+  }
+
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', filePath);
 }
 
 function handleFileDragEnd(e) {
-  e.currentTarget.style.opacity = '1';
+  // 🆕 複数ドラッグ時は選択中の全アイテムの透明度を戻す
+  if (draggedMultiPaths) {
+    document.querySelectorAll('#favorites .item').forEach(el => { el.style.opacity = '1'; });
+  } else {
+    e.currentTarget.style.opacity = '1';
+  }
   draggedFile = null;
   draggedFromFolderId = null;
+  draggedMultiPaths = null;
   removePlaceholder();
 }
 
 // ファイル要素上でのdragover（並び替え用）
 function handleFileDragOver(e, targetPath, targetFolderId) {
   if (!draggedFile) return; // ファイルドラッグ中のみ
+  if (draggedMultiPaths) return; // 🆕 複数ドラッグ中はファイル単位の並び替えは行わない（フォルダへの移動のみ。イベントはfolder-group側へbubbleさせる）
   if (draggedFile === targetPath) return; // 自分自身は無視
   
   // 同一フォルダ内の場合のみ並び替え処理
@@ -1231,6 +1350,7 @@ function handleFileDragLeave(e) {
 
 function handleFileDrop(e, targetPath, targetFolderId) {
   if (!draggedFile) return;
+  if (draggedMultiPaths) return; // 🆕 複数ドラッグ中はここでは処理せず、folder-group側のdropに任せる
   if (draggedFile === targetPath) return;
   
   // 同一フォルダ内の場合のみ並び替え処理
@@ -1295,9 +1415,11 @@ function handleFolderDragOver(e) {
   const targetFolderId = folderGroup.getAttribute('data-folder-id');
   const actualTargetId = targetFolderId === 'null' ? null : targetFolderId;
   
-  // ファイルをフォルダに移動（既存機能）
+  // ファイルをフォルダに移動（既存機能 + 🆕 複数選択ドラッグ対応）
   if (draggedFile && !draggedFolder) {
-    if (actualTargetId === draggedFromFolderId) {
+    // 🆕 複数選択時は選択が複数フォルダにまたがる可能性があるため、
+    // 「移動元と同じフォルダへのドロップを無効化する」最適化は単一ファイルの場合のみ行う
+    if (!draggedMultiPaths && actualTargetId === draggedFromFolderId) {
       e.dataTransfer.dropEffect = 'none';
       return;
     }
@@ -1369,6 +1491,16 @@ function handleFolderDrop(e, targetFolderId) {
   
   // ファイルをフォルダに移動
   if (draggedFile && !draggedFolder) {
+    // 🆕 複数選択したファイルをまとめてドラッグしていた場合
+    if (draggedMultiPaths) {
+      vscode.postMessage({
+        command: 'moveFilesToFolder',
+        filePaths: draggedMultiPaths,
+        targetFolderId: targetFolderId
+      });
+      clearFavoritesMultiSelect();
+      return;
+    }
     if (targetFolderId === draggedFromFolderId) return;
     vscode.postMessage({
       command: 'moveFileToFolder',

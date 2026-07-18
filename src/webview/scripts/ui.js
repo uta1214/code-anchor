@@ -10,6 +10,24 @@ function escapeHtml(text) {
   return div.innerHTML; 
 }
 
+// 🆕 検索ハイライト: マッチした部分だけを <mark> で囲んで返す。
+// escapeHtml後の文字列に対して行うと、エスケープで文字数がズレて壊れるため、
+// 「マッチ前後で分割 → それぞれ個別にescapeHtml → マッチ部分だけ<mark>で挟んで結合」という手順で安全に処理する。
+function highlightMatch(text, searchText) {
+  const safeText = text == null ? '' : String(text);
+  if (!searchText) {
+    return escapeHtml(safeText);
+  }
+  const idx = safeText.toLowerCase().indexOf(searchText.toLowerCase());
+  if (idx === -1) {
+    return escapeHtml(safeText);
+  }
+  const before = safeText.slice(0, idx);
+  const match = safeText.slice(idx, idx + searchText.length);
+  const after = safeText.slice(idx + searchText.length);
+  return escapeHtml(before) + '<mark class="search-highlight">' + escapeHtml(match) + '</mark>' + escapeHtml(after);
+}
+
 // ファイル拡張子からアイコンを取得
 function getFileIcon(fileName) {
   const ext = fileName.split('.').pop().toLowerCase();
@@ -288,3 +306,4 @@ window.toggleIconSelect = toggleIconSelect;
 window.selectIcon = selectIcon;
 window.selectIconFilter = selectIconFilter;
 window.setIconImages = setIconImages;
+window.highlightMatch = highlightMatch;

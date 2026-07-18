@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { FavoriteFile, Bookmark, BookmarksData, BookmarkIconType, ICON_TYPE_LABELS, FavoriteMode, SortType, FavoritesMeta, BookmarksMeta, VirtualFolder } from './types';
 import { getHtmlContent } from './webview/index';
+import { isIconPathAllowed, isPathWithinRoot, sanitizeBookmarksData, sanitizeFavoritesData, generateVirtualFolderId } from './security';
 
 export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
@@ -27,6 +28,29 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     if (config.get<boolean>('notifications.show', true)) {
       vscode.window.showInformationMessage(message);
     }
+  }
+
+  // 🆕 Undo可能な操作向けの通知。誤操作からの復旧手段のため、
+  // notifications.show設定に関わらず常に表示する（Undoボタン付き）。
+  // 直前1件のみ復元可能なシンプルな実装。
+  private undoToken: symbol | undefined;
+  private showUndoableInfo(message: string, restore: () => void): void {
+    const token = Symbol();
+    this.undoToken = token;
+    vscode.window.showInformationMessage(message, 'Undo').then(selection => {
+      if (selection === 'Undo') {
+        if (this.undoToken === token) {
+          restore();
+        } else {
+          // 🔧 FIX: 別の操作が既に行われ、この通知のUndoはもう有効ではない。
+          // 何も起きないまま終わるとユーザーが「押したのに反応しない」と混乱するため、理由を伝える。
+          vscode.window.showWarningMessage('Core Anchor: This action can no longer be undone (a newer change was made since).');
+        }
+      }
+      if (this.undoToken === token) {
+        this.undoToken = undefined;
+      }
+    });
   }
 
   reloadWebview() {
@@ -117,6 +141,9 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         case 'moveFileToFolder':
           await this.moveFileToFolder(message.filePath, message.targetFolderId);
           break;
+        case 'moveFilesToFolder':
+          await this.moveFilesToFolder(message.filePaths, message.targetFolderId);
+          break;
         case 'moveFolderToFolder':
           await this.moveFolderToFolder(message.folderId, message.targetParentId);
           break;
@@ -132,6 +159,12 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         case 'removeFavorite':
           await this.removeFavorite(message.path);
           break;
+        case 'bulkRemoveFavorites':
+          await this.bulkRemoveFavorites(message.paths);
+          break;
+        case 'bulkMoveFavoritesToFolder':
+          await this.bulkMoveFavoritesToFolder(message.paths);
+          break;
         case 'openFile':
           await this.openFile(message.path, message.openToSide);
           break;
@@ -146,6 +179,9 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
           break;
         case 'removeBookmark':
           await this.removeBookmark(message.filePath, message.line);
+          break;
+        case 'bulkRemoveBookmarks':
+          await this.bulkRemoveBookmarks(message.items);
           break;
         case 'jumpToBookmark':
           await this.jumpToBookmark(message.filePath, message.line, message.openToSide);
@@ -235,24 +271,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     this.refresh();
   }
 
-  // 🔧 FIX(security): core-anchor.icons.* はワークスペース単位の .vscode/settings.json でも
-  // 上書き可能な設定のため、信頼されていない（Workspace Trust未許可の）ワークスペースを開いた場合、
-  // ワークスペース外の任意ディレクトリを Webview の localResourceRoots / アイコン読み込み対象に
-  // 含めてしまわないようにする。ワークスペースが信頼されている場合は従来通り絶対パスも許可する。
-  private isIconPathAllowed(absolutePath: string): boolean {
-    if (vscode.workspace.isTrusted) {
-      return true;
-    }
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
-      return false;
-    }
-    const normalized = path.normalize(absolutePath);
-    return workspaceFolders.some(folder => {
-      const root = path.normalize(folder.uri.fsPath);
-      return normalized === root || normalized.startsWith(root + path.sep);
-    });
-  }
+  // 🔧 FIX: isIconPathAllowed は security.ts に共通化（extension.ts との重複実装を解消）
 
   private getCustomIconDirectories(): vscode.Uri[] {
     const dirs = new Set<string>();
@@ -272,7 +291,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
           }
         }
         
-        if (fs.existsSync(absolutePath) && this.isIconPathAllowed(absolutePath)) {
+        if (fs.existsSync(absolutePath) && isIconPathAllowed(absolutePath)) {
           const dir = path.dirname(absolutePath);
           dirs.add(dir);
         }
@@ -507,7 +526,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Favoritesを読み込む
-  private loadFavorites(): { [key: string]: FavoriteFile } {
+  public loadFavorites(): { [key: string]: FavoriteFile } {
     const favoritesPath = this.getCurrentFavoritesPath();
     
     if (!favoritesPath || !fs.existsSync(favoritesPath)) {
@@ -516,7 +535,9 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
 
     try {
       const content = fs.readFileSync(favoritesPath, 'utf-8');
-      const favorites = JSON.parse(content);
+      // 🔧 FIX(security): favorites.json も bookmarks.json 同様、ワークスペース単位で
+      // 共有されうる信頼できない入力のため、読み込み時に型を強制する。
+      const favorites = sanitizeFavoritesData(JSON.parse(content));
       
       // orderを初期化
       let maxOrder = 0;
@@ -535,7 +556,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Favorites Metaを読み込む
-  private loadFavoritesMeta(): FavoritesMeta {
+  public loadFavoritesMeta(): FavoritesMeta {
     const metaPath = this.getFavoritesMetaPath();
     
     if (!metaPath || !fs.existsSync(metaPath)) {
@@ -574,7 +595,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Favoritesを保存する
-  private saveFavorites(favorites: { [key: string]: FavoriteFile }) {
+  public saveFavorites(favorites: { [key: string]: FavoriteFile }) {
     const favoritesPath = this.getCurrentFavoritesPath();
     
     if (!favoritesPath) {
@@ -591,7 +612,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
   }
 
   // Favorites Metaを保存
-  private saveFavoritesMeta(meta: FavoritesMeta) {
+  public saveFavoritesMeta(meta: FavoritesMeta) {
     const metaPath = this.getFavoritesMetaPath();
     
     if (!metaPath) {
@@ -884,7 +905,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
       });
       
       if (folderName && folderName.trim()) {
-        const newFolderId = 'vf-' + Date.now();
+        const newFolderId = generateVirtualFolderId(); // 🔧 FIX: 衝突防止のため乱数サフィックス付きIDに統一
         if (!meta.virtualFolders) {
           meta.virtualFolders = [];
         }
@@ -973,9 +994,108 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
 
   private async removeFavorite(filePath: string) {
     const favorites = this.loadFavorites();
+    const removedEntry = favorites[filePath];
+    if (!removedEntry) return;
+
     delete favorites[filePath];
     this.saveFavorites(favorites);
     this.refresh();
+
+    // 🆕 Undo対応
+    this.showUndoableInfo(`Removed "${filePath}" from favorites`, () => {
+      const current = this.loadFavorites();
+      current[filePath] = removedEntry;
+      this.saveFavorites(current);
+      this.refresh();
+    });
+  }
+
+  // 🆕 複数選択したFavoritesを一括削除
+  private async bulkRemoveFavorites(paths: string[]) {
+    if (!Array.isArray(paths) || paths.length === 0) return;
+
+    const favorites = this.loadFavorites();
+    const removedEntries: { [path: string]: FavoriteFile } = {};
+    paths.forEach(p => {
+      if (favorites[p]) {
+        removedEntries[p] = favorites[p];
+        delete favorites[p];
+      }
+    });
+
+    const removedCount = Object.keys(removedEntries).length;
+    if (removedCount === 0) return;
+
+    this.saveFavorites(favorites);
+    this.refresh();
+
+    this.showUndoableInfo(`Removed ${removedCount} file(s) from favorites`, () => {
+      const current = this.loadFavorites();
+      Object.assign(current, removedEntries);
+      this.saveFavorites(current);
+      this.refresh();
+    });
+  }
+
+  // 🆕 複数選択したFavoritesを一括でフォルダ移動
+  private async bulkMoveFavoritesToFolder(paths: string[]) {
+    if (!Array.isArray(paths) || paths.length === 0) return;
+
+    const meta = this.loadFavoritesMeta();
+    const virtualFolders = meta.virtualFolders || [];
+
+    const folderItems: vscode.QuickPickItem[] = [
+      { label: '$(inbox) Uncategorized', description: '' }
+    ];
+    if (virtualFolders.length > 0) {
+      folderItems.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+      virtualFolders.forEach(folder => {
+        folderItems.push({ label: `$(folder) ${folder.name}`, description: '' });
+      });
+    }
+
+    const selected = await vscode.window.showQuickPick(folderItems, {
+      placeHolder: `Move ${paths.length} file(s) to...`,
+      title: 'Move to Folder'
+    });
+    if (!selected) return;
+
+    let targetFolderId: string | null = null;
+    if (selected.label !== '$(inbox) Uncategorized') {
+      const folderName = selected.label.replace('$(folder) ', '');
+      const targetFolder = virtualFolders.find(f => f.name === folderName);
+      targetFolderId = targetFolder ? targetFolder.id : null;
+    }
+
+    const favorites = this.loadFavorites();
+    const previousFolders: { [path: string]: string | null | undefined } = {};
+    let movedCount = 0;
+    paths.forEach(p => {
+      if (favorites[p]) {
+        previousFolders[p] = favorites[p].virtualFolderId;
+        favorites[p].virtualFolderId = targetFolderId;
+        movedCount++;
+      }
+    });
+    if (movedCount === 0) return;
+
+    this.saveFavorites(favorites);
+    this.refresh();
+
+    const targetName = targetFolderId
+      ? (virtualFolders.find(f => f.id === targetFolderId)?.name || 'folder')
+      : 'Uncategorized';
+
+    this.showUndoableInfo(`Moved ${movedCount} file(s) to "${targetName}"`, () => {
+      const current = this.loadFavorites();
+      Object.entries(previousFolders).forEach(([p, folderId]) => {
+        if (current[p]) {
+          current[p].virtualFolderId = folderId ?? null;
+        }
+      });
+      this.saveFavorites(current);
+      this.refresh();
+    });
   }
 
   // 仮想フォルダを作成
@@ -1018,7 +1138,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         createdFolders.push(folderName + ' (existing)');
       } else {
         // 新しいフォルダを作成（IDの衝突を避けるためランダム値を追加）
-        const id = 'vf-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+        const id = generateVirtualFolderId();
         const order = meta.virtualFolders.length;
 
         meta.virtualFolders.push({
@@ -1256,6 +1376,45 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     this.showInfo(`Moved "${fileName}" to "${targetFolderName}"`);
   }
 
+  // 🆕 ドラッグ&ドロップで複数選択したFavoritesを、ドロップ先フォルダへ直接移動する。
+  // bulkMoveFavoritesToFolder（バルクアクションバーの「Move」ボタン用）とは異なり、
+  // ドロップ先フォルダは既にUI側（ドロップされたfolder-group）で確定しているため、
+  // QuickPickによるフォルダ選択は行わない。
+  private async moveFilesToFolder(filePaths: string[], targetFolderId: string | null) {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) return;
+
+    const favorites = this.loadFavorites();
+    const previousFolders: { [path: string]: string | null | undefined } = {};
+    let movedCount = 0;
+    filePaths.forEach(p => {
+      if (favorites[p]) {
+        previousFolders[p] = favorites[p].virtualFolderId;
+        favorites[p].virtualFolderId = targetFolderId;
+        movedCount++;
+      }
+    });
+    if (movedCount === 0) return;
+
+    this.saveFavorites(favorites);
+    this.refresh();
+
+    const meta = this.loadFavoritesMeta();
+    const targetName = targetFolderId
+      ? (meta.virtualFolders?.find(f => f.id === targetFolderId)?.name || 'folder')
+      : 'Uncategorized';
+
+    this.showUndoableInfo(`Moved ${movedCount} file(s) to "${targetName}"`, () => {
+      const current = this.loadFavorites();
+      Object.entries(previousFolders).forEach(([p, folderId]) => {
+        if (current[p]) {
+          current[p].virtualFolderId = folderId ?? null;
+        }
+      });
+      this.saveFavorites(current);
+      this.refresh();
+    });
+  }
+
   // 仮想フォルダを別の仮想フォルダに移動（サブフォルダ化）
   private async moveFolderToFolder(folderId: string, targetParentId: string | null) {
     const meta = this.loadFavoritesMeta();
@@ -1422,7 +1581,24 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         vscode.window.showErrorMessage('No workspace folder is open');
         return;
       }
-      const fullPath = path.join(workspaceFolders[0].uri.fsPath, filePath);
+      const root = workspaceFolders[0].uri.fsPath;
+      const fullPath = path.join(root, filePath);
+
+      // 🔧 FIX(security): 相対パスのFavoriteが「../」等でワークスペース外を指している場合、
+      // 悪意あるリポジトリに仕込まれた不正な favorites.json によって、ユーザーが気づかないまま
+      // ワークスペース外の任意ファイル（例: ~/.ssh/id_rsa）を開いてしまう可能性がある。
+      // 完全に禁止すると意図的な用途（モノレポ等）を壊すため、開く前に確認を挟む。
+      if (!isPathWithinRoot(root, fullPath)) {
+        const choice = await vscode.window.showWarningMessage(
+          `This favorite points outside the workspace folder:\n${fullPath}\n\nOpen it anyway?`,
+          { modal: true },
+          'Open'
+        );
+        if (choice !== 'Open') {
+          return;
+        }
+      }
+
       uri = vscode.Uri.file(fullPath);
     }
 
@@ -1465,7 +1641,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         }
       }
       
-      if (fs.existsSync(absolutePath) && this.isIconPathAllowed(absolutePath)) {
+      if (fs.existsSync(absolutePath) && isIconPathAllowed(absolutePath)) {
         return absolutePath;
       }
     }
@@ -1678,7 +1854,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
       });
       
       if (folderName && folderName.trim()) {
-        const newFolderId = 'vf-' + Date.now();
+        const newFolderId = generateVirtualFolderId(); // 🔧 FIX: 衝突防止のため乱数サフィックス付きIDに統一
         if (!meta.virtualFolders) {
           meta.virtualFolders = [];
         }
@@ -1930,7 +2106,9 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
 
     const bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
 
+    let removedBookmark: Bookmark | undefined;
     if (bookmarks[filePath]) {
+      removedBookmark = bookmarks[filePath].find(b => b.line === line);
       bookmarks[filePath] = bookmarks[filePath].filter(b => b.line !== line);
       if (bookmarks[filePath].length === 0) {
         delete bookmarks[filePath];
@@ -1944,6 +2122,83 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     if (editor && this.decorationTypes) {
       this.updateDecorations(editor);
     }
+
+    // 🆕 Undo対応
+    if (removedBookmark) {
+      const bookmarkToRestore = removedBookmark;
+      this.showUndoableInfo(`Removed bookmark "${bookmarkToRestore.label || 'Line ' + (line + 1)}"`, () => {
+        const current = this.readBookmarksFileSafe(this.getBookmarksPath());
+        if (!current[filePath]) {
+          current[filePath] = [];
+        }
+        if (!current[filePath].some(b => b.line === bookmarkToRestore.line)) {
+          current[filePath].push(bookmarkToRestore);
+        }
+        this.resortBookmarksForFile(current, filePath);
+        this.saveBookmarks(current);
+        this.refresh();
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && this.decorationTypes) {
+          this.updateDecorations(activeEditor);
+        }
+      });
+    }
+  }
+
+  // 🆕 複数選択したBookmarksを一括削除
+  private async bulkRemoveBookmarks(items: { filePath: string; line: number }[]) {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const bookmarksPath = this.getBookmarksPath();
+    const bookmarks: BookmarksData = this.readBookmarksFileSafe(bookmarksPath);
+    const removedByFile: BookmarksData = {};
+    let removedCount = 0;
+
+    items.forEach(({ filePath, line }) => {
+      if (!bookmarks[filePath]) return;
+      const idx = bookmarks[filePath].findIndex(b => b.line === line);
+      if (idx === -1) return;
+      if (!removedByFile[filePath]) {
+        removedByFile[filePath] = [];
+      }
+      removedByFile[filePath].push(bookmarks[filePath][idx]);
+      bookmarks[filePath].splice(idx, 1);
+      removedCount++;
+      if (bookmarks[filePath].length === 0) {
+        delete bookmarks[filePath];
+      }
+    });
+
+    if (removedCount === 0) return;
+
+    this.saveBookmarks(bookmarks);
+    this.refresh();
+
+    const editor = vscode.window.activeTextEditor;
+    if (editor && this.decorationTypes) {
+      this.updateDecorations(editor);
+    }
+
+    this.showUndoableInfo(`Removed ${removedCount} bookmark(s)`, () => {
+      const current = this.readBookmarksFileSafe(this.getBookmarksPath());
+      Object.entries(removedByFile).forEach(([filePath, marks]) => {
+        if (!current[filePath]) {
+          current[filePath] = [];
+        }
+        marks.forEach(m => {
+          if (!current[filePath].some(b => b.line === m.line)) {
+            current[filePath].push(m);
+          }
+        });
+        this.resortBookmarksForFile(current, filePath);
+      });
+      this.saveBookmarks(current);
+      this.refresh();
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor && this.decorationTypes) {
+        this.updateDecorations(activeEditor);
+      }
+    });
   }
 
   // ファイル内の全ブックマークを削除
@@ -1955,6 +2210,7 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
 
     if (bookmarks[filePath]) {
       const count = bookmarks[filePath].length;
+      const removedBookmarks = bookmarks[filePath];
       delete bookmarks[filePath];
       
       this.saveBookmarks(bookmarks);
@@ -1965,7 +2221,18 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
         this.updateDecorations(editor);
       }
       
-      this.showInfo(`Deleted ${count} bookmarks from ${filePath}`);
+      // 🆕 Undo対応
+      this.showUndoableInfo(`Deleted ${count} bookmarks from ${filePath}`, () => {
+        const current = this.readBookmarksFileSafe(this.getBookmarksPath());
+        current[filePath] = removedBookmarks;
+        this.resortBookmarksForFile(current, filePath);
+        this.saveBookmarks(current);
+        this.refresh();
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && this.decorationTypes) {
+          this.updateDecorations(activeEditor);
+        }
+      });
     }
   }
 
@@ -1980,14 +2247,22 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     });
     
     if (filesToDelete.length > 0) {
+      const removedEntries: { [path: string]: FavoriteFile } = {};
       filesToDelete.forEach(filePath => {
+        removedEntries[filePath] = favorites[filePath];
         delete favorites[filePath];
       });
       
       this.saveFavorites(favorites);
       this.refresh();
       
-      this.showInfo(`Deleted ${filesToDelete.length} files from favorites`);
+      // 🆕 Undo対応
+      this.showUndoableInfo(`Deleted ${filesToDelete.length} files from favorites`, () => {
+        const current = this.loadFavorites();
+        Object.assign(current, removedEntries);
+        this.saveFavorites(current);
+        this.refresh();
+      });
     }
   }
 
@@ -2028,6 +2303,20 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     return path.join(vscodeFolder, 'bookmarks.json');
   }
 
+  // 🔧 FIX: Undoで復元したブックマークが常に末尾に追加され、
+  // 「Line」ソート中でも行番号順を無視してしまっていた。
+  // addBookmarkManual と同じく、現在の globalSortType に従って再ソートする。
+  private resortBookmarksForFile(bookmarks: BookmarksData, filePath: string) {
+    if (!bookmarks[filePath]) return;
+    const meta = this.loadBookmarksMeta();
+    const sortType = meta.globalSortType || 'line';
+    if (sortType === 'line') {
+      bookmarks[filePath].sort((a, b) => a.line - b.line);
+    } else if (sortType === 'order') {
+      bookmarks[filePath].sort((a, b) => (a.order || 0) - (b.order || 0));
+    }
+  }
+
   private saveBookmarks(bookmarks: BookmarksData) {
     const bookmarksPath = this.getBookmarksPath();
     fs.writeFileSync(bookmarksPath, JSON.stringify(bookmarks, null, 2));
@@ -2044,7 +2333,10 @@ export class CoreAnchorProvider implements vscode.WebviewViewProvider {
     }
     try {
       const content = fs.readFileSync(bookmarksPath, 'utf-8');
-      return JSON.parse(content);
+      // 🔧 FIX(security): bookmarks.json はワークスペース単位で共有されうる信頼できない入力のため、
+      // JSON.parse直後に型を強制する（不正な line 等がWebview側で未エスケープのまま
+      // HTML属性値に埋め込まれることを防ぐ）。
+      return sanitizeBookmarksData(JSON.parse(content));
     } catch (error) {
       console.error('Error loading bookmarks.json:', error);
       vscode.window.showErrorMessage(
